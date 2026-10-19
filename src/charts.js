@@ -31,9 +31,12 @@ export function hbar(rows, { fmt, color = () => 'var(--series-1)', sub, labelW =
   const rowH = 28;
   const padTop = 6;
   const width = 560;
-  const plotW = width - labelW - 70;
-  const height = padTop + rows.length * rowH + 8;
   const max = niceMax(Math.max(...rows.map((r) => r.value)));
+  // reserva à direita o espaço do maior rótulo de valor (+ complemento), para a barra cheia não cortar o texto
+  const longest = Math.max(...rows.map((r) => `${fmt(r.value)}${sub ? ` ${sub(r)}` : ''}`.length));
+  const valueW = Math.min(width - labelW - 120, Math.max(70, 6 + longest * 6.2));
+  const plotW = width - labelW - valueW;
+  const height = padTop + rows.length * rowH + 8;
   let out = `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Gráfico de barras">`;
   rows.forEach((r, i) => {
     const y = padTop + i * rowH;

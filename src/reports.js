@@ -62,10 +62,42 @@ export function classifyPayment(raw) {
   else if (lower.includes('crédito') || lower.includes('credito')) meio = 'Crédito';
   else if (lower.includes('débito') || lower.includes('debito') || lower.includes('maestro')) meio = 'Débito';
   else if (lower.includes('carteira') || lower.includes('saldo')) meio = 'Carteira';
-  else if (lower.includes('voucher')) meio = 'Voucher';
+  else if (lower.includes('voucher') || /\b(vr|sodexo|pluxee|alelo|ticket|ben)\b/.test(lower)) meio = 'Voucher';
+  else if (lower.includes('boleto')) meio = 'Boleto';
   else if (CARD_BRANDS.test(s)) meio = 'Cartão';
   else meio = s.split('|').pop().trim();
   return { meio, bandeira: brand ? brand.toLowerCase() : null };
+}
+
+/**
+ * Classifica o evento da sessão. Cada linha do relatório é um evento:
+ *  - compra: "Compra efetuada" (venda registrada e paga)
+ *  - carrinho: "No carrinho" (sessão sem compra; pode ter itens no carrinho)
+ *  - removida: "Compra removida" (compra cancelada/removida antes do pagamento)
+ *  - estornada: "Compra estornada" (venda paga e depois estornada)
+ *  - cobranca_pendente: "Cobrança pendente" (itens levados sem pagar; link de pagamento gerado)
+ *  - cobranca_paga: "Pagamento efetuada (cobrança)" (cobrança recuperada)
+ */
+export const EVENTOS = {
+  compra: { label: 'Compra', tone: 'good' },
+  cobranca_paga: { label: 'Cobrança paga', tone: 'good' },
+  cobranca_pendente: { label: 'Cobrança pendente', tone: 'critical' },
+  carrinho: { label: 'Carrinho abandonado', tone: 'warning' },
+  removida: { label: 'Compra removida', tone: 'neutral' },
+  estornada: { label: 'Estornada', tone: 'critical' },
+  outro: { label: 'Outro', tone: 'neutral' },
+};
+
+export function classifyEvento(evento) {
+  const e = String(evento ?? '').toLowerCase();
+  if (e.startsWith('compra efetuada')) return 'compra';
+  if (e.startsWith('no carrinho')) return 'carrinho';
+  if (e.startsWith('compra removida')) return 'removida';
+  if (e.startsWith('compra estornada')) return 'estornada';
+  if (e.startsWith('cobrança pendente') || e.startsWith('cobranca pendente')) return 'cobranca_pendente';
+  if (e.startsWith('pagamento efetuad')) return 'cobranca_paga';
+  if (e.includes('cobran')) return e.includes('pend') ? 'cobranca_pendente' : 'cobranca_paga';
+  return 'outro';
 }
 
 /** "Compra efetuada (Bebidas não alcoólicas)" → { evento: 'Compra efetuada', categoria: 'Bebidas não alcoólicas' } */
@@ -80,7 +112,9 @@ export function normalizeTransacao(r) {
   const { evento, categoria } = splitTipo(r['Tipo']);
   const dataHora = parseDateTime(r['Data e hora']);
   const { meio, bandeira } = classifyPayment(r['Forma pagamento']);
-  const compra = /^compra efetuada/i.test(evento);
+  const tipoEvento = classifyEvento(evento);
+  const compra = tipoEvento === 'compra';
+  const link = r['Link de Pagamento'];
   return {
     id,
     sessao: r['Code Session'] || null,
@@ -94,8 +128,10 @@ export function normalizeTransacao(r) {
     totalGastoCliente: parseMoneyCents(r['Total gasto']),
     via: (r['Via'] || '').toUpperCase() || null,
     evento,
+    tipoEvento,
     categoriaEvento: categoria,
     compra,
+    cobranca: tipoEvento === 'cobranca_pendente' || tipoEvento === 'cobranca_paga',
     distanciaKm: parseDistanceKm(r['Distância']),
     leituraQrcode: parseYesNo(r['Leitura QRCODE']),
     cpfNaNota: parseYesNo(r['CPF na nota']),
@@ -115,6 +151,10 @@ export function normalizeTransacao(r) {
     cashbackCents: parseMoneyCents(r['Cashback']),
     subtotalCents: parseMoneyCents(r['Subtotal']),
     emissaoNfce: parseDateTime(r['Emissão NFCe']),
+    saldoCarteiraCents: parseMoneyCents(r['Saldo Carteira']),
+    idLinkPagamento: r['ID link de pagamento'] && r['ID link de pagamento'] !== '--' ? r['ID link de pagamento'] : null,
+    linkPagamento: /^https?:\/\//.test(link ?? '') ? link : null,
+    taxaCobranca: parseYesNo(r['Possui taxa de cobrança']),
     dataHora,
     data: dateOnly(dataHora),
     hora: hourOf(dataHora),

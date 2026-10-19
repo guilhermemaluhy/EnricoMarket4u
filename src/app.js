@@ -1,5 +1,5 @@
 // Estado, importação dos relatórios e renderização do dashboard.
-import { loadReport, mergeRecords, REPORT_TYPES, SITUACOES } from './reports.js';
+import { loadReport, mergeRecords, REPORT_TYPES, SITUACOES, EVENTOS } from './reports.js';
 import * as M from './metrics.js';
 import { hbar, columns, stacked, legend, table, heatmap, emptyChart } from './charts.js';
 import { money, moneyShort, number, percent, shortDate, longDate, dateTime, weekday, hourLabel, escapeHtml as esc } from './format.js';
@@ -20,6 +20,7 @@ const EMPTY = () => ({ transacoes: [], produtos: [], boletos: [], retornos: [], 
 const TABS = [
   { id: 'visao', label: 'Visão geral' },
   { id: 'financeiro', label: 'Financeiro' },
+  { id: 'cobrancas', label: 'Cobranças' },
   { id: 'vendas', label: 'Vendas' },
   { id: 'produtos', label: 'Produtos' },
   { id: 'operacao', label: 'Operação' },
@@ -227,8 +228,10 @@ function sectionOverview(f) {
   const pAnt = ant ? M.produtosKpis(M.filterProdutos(state.data.produtos, { ...ant, pdxId })) : null;
   const tiles = [];
   if (temT) {
-    tiles.push(tile('Faturamento', money(v.faturamentoCents), `${number(v.compras)} compras · ticket ${money(v.ticketMedioCents)}${vAnt ? delta(v.faturamentoCents, vAnt.faturamentoCents, { fmt: money }) : ''}`));
-    tiles.push(tile('Conversão de carrinhos', percent(v.taxaConversao), `${number(v.carrinhosAbandonados)} carrinhos abandonados${vAnt ? delta(v.taxaConversao, vAnt.taxaConversao) : ''}`, v.taxaConversao < 0.6 ? 'warning' : ''));
+    const cob = M.cobrancasKpis(f.transacoes, state.hoje);
+    tiles.push(tile('Faturamento', money(v.faturamentoCents), `${number(v.compras)} compras · ticket ${money(v.ticketMedioCents)}${v.recuperadoCents ? ` · +${money(v.recuperadoCents)} recuperados` : ''}${vAnt ? delta(v.faturamentoCents, vAnt.faturamentoCents, { fmt: money }) : ''}`));
+    tiles.push(tile('Conversão de sessões', percent(v.taxaConversao), `${number(v.carrinhosAbandonados)} carrinhos abandonados (${money(v.valorCarrinhosCents)}) · ${number(v.comprasRemovidas)} compras removidas${vAnt ? delta(v.taxaConversao, vAnt.taxaConversao) : ''}`, v.taxaConversao < 0.6 ? 'warning' : ''));
+    tiles.push(tile('Cobranças pendentes', money(cob.pendentesCents), cob.pendentes ? `${number(cob.pendentes)} cobranças · mais antiga há ${cob.maisAntigaDias} dias · ${money(cob.pagasCents)} recuperados no período` : `nenhuma pendente · ${money(cob.pagasCents)} recuperados no período`, cob.pendentes ? (cob.maisAntigaDias > 7 ? 'critical' : 'warning') : 'good'));
     tiles.push(tile('Clientes', number(v.clientesUnicos), `${number(v.clientesNovos)} na primeira compra${vAnt ? delta(v.clientesUnicos, vAnt.clientesUnicos, { fmt: number }) : ''}`));
   }
   if (temP) tiles.push(tile('Margem bruta', percent(p.margemPct), `${money(p.margemCents)} sobre ${money(p.receitaCents)} em ${number(p.itens)} itens${pAnt ? delta(p.margemCents, pAnt.margemCents, { fmt: money }) : ''}`, p.margemPct < 0.3 ? 'warning' : 'good'));
@@ -265,6 +268,7 @@ function sectionDecisao(f) {
     vendas, lojas, boletos: b, caixa, revisar,
     fiscal: vendas ? { semNfce: vendas.compras - vendas.nfceEmitidas } : null,
     abandonosCategoria: temT ? M.abandonosPorCategoria(f.transacoes) : [],
+    cobrancas: temT ? M.cobrancasKpis(f.transacoes, state.hoje) : null,
     diasComDados,
   }).concat(
     M.recomendacoesOperacao({
@@ -434,7 +438,8 @@ function sectionLojas(f) {
     { label: 'Compras', num: true, get: (r) => number(r.compras) },
     { label: 'Ticket', num: true, get: (r) => money(r.ticketCents) },
     { label: 'Itens/compra', num: true, get: (r) => number(r.itensPorCompra) },
-    { label: 'Conversão', num: true, html: true, get: (r) => `<span class="${r.sessoes >= 5 && r.conversao < 0.6 ? 'neg' : ''}">${esc(percent(r.conversao))}</span> <span class="desc">(${r.abandonos} aband.)</span>` },
+    { label: 'Conversão', num: true, html: true, get: (r) => `<span class="${r.sessoes >= 5 && r.conversao < 0.6 ? 'neg' : ''}">${esc(percent(r.conversao))}</span> <span class="desc">(${r.carrinhos} carrinhos · ${r.removidas} removidas)</span>` },
+    { label: 'Cobranças', num: true, html: true, get: (r) => (r.cobrancasPendentes ? `<span class="neg">${r.cobrancasPendentes} · ${esc(money(r.cobrancasPendentesCents))}</span>` : '—') },
     { label: '% app', num: true, get: (r) => percent(r.pctApp) },
     { label: 'Clientes', num: true, get: (r) => number(r.clientes) },
   ];
@@ -481,6 +486,107 @@ function sectionClientes(f) {
   return `<section><h2>Clientes <span class="scope">quem compra e quem desiste</span></h2><div class="grid">${cards.join('')}<div class="card span-2"><div class="card-head"><h3>Top 10 clientes</h3><span class="desc">no período, com o histórico que o painel informa</span></div>${topHtml}</div></div></section>`;
 }
 
+function sectionCobrancas(f) {
+  if (state.data.transacoes.length === 0) return `<section><p class="empty">Importe o relatório de <b>transações</b> na aba Dados. As cobranças vêm dele (eventos "Cobrança pendente" e "Pagamento efetuada (cobrança)").</p></section>`;
+  const k = M.cobrancasKpis(f.transacoes, state.hoje);
+  const porLoja = M.cobrancasPorLoja(f.transacoes);
+  const semanas = M.cobrancasPorSemana(f.transacoes);
+  const clientes = M.clientesEmCobranca(f.transacoes);
+  const colorLoja = storeColors();
+  const agingColor = (r) => (/até 3/.test(r.key) ? 'var(--series-1)' : /4–7/.test(r.key) ? 'var(--warning)' : 'var(--critical)');
+  const agingPill = (dias) => `<span class="pill ${dias <= 3 ? 'neutral' : dias <= 7 ? 'warning' : 'critical'}">${dias} dia${dias === 1 ? '' : 's'}</span>`;
+  const statusPill = (st) => `<span class="pill ${/bloquead/i.test(st ?? '') ? 'critical' : /desativ/i.test(st ?? '') ? 'warning' : 'good'}">${esc(st ?? '—')}</span>`;
+  const riscoPill = (r) => `<span class="pill ${r === 'alto' ? 'critical' : r === 'medio' ? 'warning' : 'good'}">${r === 'alto' ? 'Alto' : r === 'medio' ? 'Médio' : 'Baixo'}</span>`;
+  const tiles = [
+    tile('Pendente', money(k.pendentesCents), k.pendentes ? `${number(k.pendentes)} cobranças · ${number(k.itensPendentes)} itens · ticket ${money(k.ticketPendenteCents)}` : 'nenhuma cobrança em aberto', k.pendentes ? 'critical' : 'good'),
+    tile('Recuperado no período', money(k.pagasCents), `${number(k.pagas)} cobranças pagas`, k.pagas ? 'good' : ''),
+    tile('Taxa de recuperação', k.taxaRecuperacaoValor == null ? '—' : percent(k.taxaRecuperacaoValor), k.emitidas ? `em valor · ${percent(k.taxaRecuperacaoQtd)} em quantidade (${number(k.pagas)} de ${number(k.emitidas)})` : 'sem cobranças no período', k.taxaRecuperacaoValor == null ? '' : k.taxaRecuperacaoValor < 0.5 ? 'warning' : 'good'),
+    tile('Mais antiga em aberto', k.maisAntigaDias == null ? '—' : `${k.maisAntigaDias} dias`, k.pendentes ? `idade média ${number(k.idadeMediaDias)} dias · ${number(k.comTaxa)} com taxa de cobrança` : '', k.maisAntigaDias > 7 ? 'critical' : k.maisAntigaDias > 3 ? 'warning' : ''),
+    tile('Clientes de risco', number(clientes.filter((c) => c.risco === 'alto').length), `${number(k.reincidentes)} reincidentes · ${number(k.pendentesBloqueados)} pendências de cliente bloqueado ou desativado`, clientes.some((c) => c.risco === 'alto') ? 'critical' : 'good'),
+  ];
+  const cards = [
+    card({
+      title: 'Envelhecimento das pendências', desc: 'valor em aberto por tempo desde a cobrança',
+      chart: columns(k.aging, { fmt: money0, labelFn: (x) => x, color: agingColor, tipLines: (r) => [money(r.value), `${r.count} cobranças`] }),
+      legendHtml: legend([{ label: 'até 3 dias', color: 'var(--series-1)' }, { label: '4–7 dias', color: 'var(--warning)' }, { label: '8 dias ou mais', color: 'var(--critical)' }]),
+      tableHtml: table([{ label: 'Faixa', get: (r) => r.key }, { label: 'Valor', num: true, get: (r) => money(r.value) }, { label: 'Cobranças', num: true, get: (r) => number(r.count) }], k.aging),
+    }),
+    card({
+      title: 'Por semana', desc: 'valor das cobranças geradas (pendentes) e pagas em cada semana',
+      chart: columns(semanas, { fmt: money0, labelFn: (w) => w.replace('-S', ' s'), tipLines: (r) => [`pendentes ${money(r.pendentesCents)} (${r.pendentes})`, `pagas ${money(r.pagasCents)} (${r.pagas})`] }),
+      tableHtml: table([{ label: 'Semana', get: (r) => r.key.replace('-S', ' · sem. ') }, { label: 'Pendentes', num: true, get: (r) => `${money(r.pendentesCents)} (${r.pendentes})` }, { label: 'Pagas', num: true, get: (r) => `${money(r.pagasCents)} (${r.pagas})` }], semanas),
+    }),
+    card({
+      title: 'Por loja', desc: 'pendente, recuperado e peso sobre o faturamento',
+      chart: hbar(porLoja, { fmt: money, labelW: 190, color: colorLoja, sub: (r) => `· ${r.pendentes} pend. · ${money(r.pagasCents)} pagas`, tipLines: (r) => [`pendente ${money(r.pendentesCents)} (${r.pendentes})`, `recuperado ${money(r.pagasCents)} (${r.pagas})`, r.pctFaturamento == null ? '' : `${percent(r.pctFaturamento)} do faturamento da loja`] }),
+      tableHtml: table(
+        [
+          { label: 'Loja', get: (r) => r.key },
+          { label: 'Pendentes', num: true, get: (r) => `${money(r.pendentesCents)} (${r.pendentes})` },
+          { label: 'Pagas', num: true, get: (r) => `${money(r.pagasCents)} (${r.pagas})` },
+          { label: 'Recuperação', num: true, get: (r) => (r.recuperacao == null ? '—' : percent(r.recuperacao)) },
+          { label: '% do faturamento', num: true, get: (r) => (r.pctFaturamento == null ? '—' : percent(r.pctFaturamento)) },
+        ],
+        porLoja,
+      ),
+    }),
+  ];
+  const pendentesHtml = k.listaPendentes.length
+    ? table(
+        [
+          { label: 'Em aberto', html: true, get: (t) => agingPill(t.dias) },
+          { label: 'Cobrança', get: (t) => dateTime(t.dataHora) },
+          { label: 'Loja', get: (t) => t.pdx },
+          { label: 'Cliente', html: true, get: (t) => `${esc(t.cliente ?? t.clienteId ?? '—')} ${statusPill(t.statusCliente)}` },
+          { label: 'Histórico', num: true, get: (t) => `${money(t.totalGastoCliente)} · ${number(t.comprasCliente)} compras` },
+          { label: 'Itens', num: true, get: (t) => number(t.qtdeProdutos) },
+          { label: 'Valor', num: true, get: (t) => money(t.totalCents) },
+          { label: 'Taxa', get: (t) => (t.taxaCobranca ? 'Sim' : t.taxaCobranca === false ? 'Não' : '—') },
+          { label: 'Forma', get: (t) => t.meioPagamento ?? 'link' },
+          { label: 'Link', html: true, get: (t) => (t.linkPagamento ? `<a href="${esc(t.linkPagamento)}" target="_blank" rel="noopener">abrir</a>${t.idLinkPagamento ? ` <span class="desc">#${esc(t.idLinkPagamento)}</span>` : ''}` : '—') },
+        ],
+        k.listaPendentes,
+      )
+    : `<p class="empty">Nenhuma cobrança pendente no período.</p>`;
+  const pagasHtml = k.listaPagas.length
+    ? table(
+        [
+          { label: 'Pagamento', get: (t) => dateTime(t.dataHora) },
+          { label: 'Loja', get: (t) => t.pdx },
+          { label: 'Cliente', html: true, get: (t) => `${esc(t.cliente ?? t.clienteId ?? '—')} ${statusPill(t.statusCliente)}` },
+          { label: 'Itens', num: true, get: (t) => number(t.qtdeProdutos) },
+          { label: 'Valor', num: true, get: (t) => money(t.totalCents) },
+          { label: 'Pagamento', get: (t) => (t.meioPagamento ? `${t.meioPagamento}${t.bandeira ? ` · ${t.bandeira}` : ''}` : '—') },
+          { label: 'NFC-e', get: (t) => t.nfce ?? '—' },
+        ],
+        k.listaPagas,
+      )
+    : `<p class="empty">Nenhuma cobrança paga no período.</p>`;
+  const clientesHtml = clientes.length
+    ? table(
+        [
+          { label: 'Risco', html: true, get: (c) => riscoPill(c.risco) },
+          { label: 'Cliente', html: true, get: (c) => `${esc(c.nome)} ${statusPill(c.status)}` },
+          { label: 'Lojas', get: (c) => c.lojas },
+          { label: 'Pendentes', num: true, get: (c) => (c.pendentes ? `${money(c.pendentesCents)} (${c.pendentes})` : '—') },
+          { label: 'Pagas', num: true, get: (c) => (c.pagas ? `${money(c.pagasCents)} (${c.pagas})` : '—') },
+          { label: 'Histórico', num: true, get: (c) => `${money(c.historicoCents)} · ${number(c.comprasHistorico)} compras` },
+          { label: 'Última cobrança', get: (c) => dateTime(c.ultima) },
+        ],
+        clientes,
+      )
+    : '';
+  return `<section><h2>Cobranças <span class="scope">itens levados sem pagamento · ${esc(scopeLabel(f.range))}</span></h2>
+    <div class="tiles" style="margin-bottom:12px">${tiles.join('')}</div>
+    <div class="grid">${cards.join('')}
+      <div class="card span-2"><div class="card-head"><h3>Cobranças pendentes</h3><span class="desc">da mais antiga para a mais recente · abra o link para reenviar ao cliente</span></div>${pendentesHtml}</div>
+      <div class="card span-2"><div class="card-head"><h3>Clientes em cobrança</h3><span class="desc">risco alto = reincidente ou pendência de cliente bloqueado/desativado · histórico ajuda a decidir entre cobrar com jeito e bloquear</span></div>${clientesHtml}</div>
+      <div class="card span-2"><div class="card-head"><h3>Cobranças recuperadas</h3><span class="desc">pagamentos de cobrança no período</span></div>${pagasHtml}</div>
+    </div>
+    <p class="kicker" style="margin-top:10px">Como ler: uma cobrança paga aparece na data do pagamento, não na da cobrança original, então a taxa de recuperação de um período curto pode enganar. Com poucas cobranças, olhe o valor e os clientes, não a porcentagem.</p>
+  </section>`;
+}
+
 function sectionVendas(f) {
   if (state.data.transacoes.length === 0) return '';
   const t = f.transacoes;
@@ -492,7 +598,14 @@ function sectionVendas(f) {
   const vias = M.porVia(t);
   const abandonos = M.abandonosPorLoja(t);
   const viaColors = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)'];
+  const funil = M.funilEventos(t).map((r) => ({ ...r, label: EVENTOS[r.key]?.label ?? r.key }));
+  const funilColor = { compra: 'var(--series-1)', carrinho: 'var(--warning)', removida: 'var(--ink-3)', estornada: 'var(--critical)', cobranca_pendente: 'var(--critical)', cobranca_paga: 'var(--good)' };
   const cards = [
+    card({
+      title: 'Funil de sessões', desc: 'o que aconteceu em cada sessão de compra',
+      chart: hbar(funil.map((r) => ({ ...r, key: r.label, value: r.count, tipo: r.key, valor: r.value })), { fmt: (v) => number(v), labelW: 170, color: (r) => funilColor[r.tipo] ?? 'var(--series-1)', sub: (r) => (r.valor ? `· ${money(r.valor)}` : ''), tipLines: (r) => [`${number(r.value)} sessões`, r.valor ? `valor ${money(r.valor)}` : 'sem valor'] }),
+      tableHtml: table([{ label: 'Evento', get: (r) => r.label }, { label: 'Sessões', num: true, get: (r) => number(r.count) }, { label: 'Valor', num: true, get: (r) => money(r.value) }], funil),
+    }),
     card({
       title: 'Faturamento por loja', desc: 'compras efetuadas',
       chart: hbar(lojas, { fmt: money, color: colorLoja, labelW: 190, sub: (r) => `· ${r.count} compras` }),
@@ -520,9 +633,9 @@ function sectionVendas(f) {
       tableHtml: table(colsValor('Canal'), vias),
     }),
     card({
-      title: 'Carrinhos abandonados por loja', desc: 'sessões “No carrinho” sem compra',
-      chart: abandonos.length ? hbar(abandonos, { fmt: (v) => `${number(v)}`, color: colorLoja, labelW: 190 }) : emptyChart(),
-      tableHtml: table([{ label: 'Loja', get: (r) => r.key }, { label: 'Carrinhos', num: true, get: (r) => number(r.value) }], abandonos),
+      title: 'Carrinhos abandonados por loja', desc: 'sessões “No carrinho” sem compra · valor que ficou no carrinho',
+      chart: abandonos.length ? hbar(abandonos, { fmt: (v) => `${number(v)}`, color: colorLoja, labelW: 190, sub: (r) => (r.valor ? `· ${money(r.valor)}` : ''), tipLines: (r) => [`${number(r.value)} carrinhos`, `valor nos carrinhos ${money(r.valor)}`] }) : emptyChart(),
+      tableHtml: table([{ label: 'Loja', get: (r) => r.key }, { label: 'Carrinhos', num: true, get: (r) => number(r.value) }, { label: 'Valor', num: true, get: (r) => money(r.valor) }], abandonos),
     }),
   ];
   return `<section><h2>Vendas <span class="scope">relatório de transações</span></h2><div class="grid">${cards.join('')}</div></section>`;
@@ -667,12 +780,12 @@ function sectionTransacoes(f) {
     [
       { label: 'Data', get: (t) => dateTime(t.dataHora) },
       { label: 'Loja', get: (t) => t.pdx },
-      { label: 'Evento', html: true, get: (t) => (t.compra ? `<span class="pill good">Compra</span>` : `<span class="pill warning">Carrinho</span>`) + (t.categoriaEvento ? ` <span class="desc">${esc(t.categoriaEvento)}</span>` : '') },
+      { label: 'Evento', html: true, get: (t) => { const e = EVENTOS[t.tipoEvento] ?? EVENTOS.outro; return `<span class="pill ${e.tone}">${esc(e.label)}</span>` + (t.categoriaEvento ? ` <span class="desc">${esc(t.categoriaEvento)}</span>` : ''); } },
       { label: 'Cliente', get: (t) => `${t.cliente ?? '—'}${t.comprasCliente ? ` (${t.comprasCliente}ª compra)` : ''}` },
       { label: 'Canal', get: (t) => t.via ?? '—' },
       { label: 'Pagamento', get: (t) => (t.meioPagamento ? `${t.meioPagamento}${t.bandeira ? ` · ${t.bandeira}` : ''}` : '—') },
       { label: 'Itens', num: true, get: (t) => number(t.qtdeProdutos) },
-      { label: 'Total', num: true, get: (t) => (t.compra ? money(t.totalCents) : '—') },
+      { label: 'Total', num: true, get: (t) => (t.totalCents ? money(t.totalCents) : '—') },
       { label: 'NFC-e', get: (t) => t.nfce ?? '—' },
     ],
     rows,
@@ -702,6 +815,7 @@ function renderTabs() {
   const badge = (id) => {
     if (id === 'dados') return `<span class="badge ${loaded === total ? 'good' : ''}">${loaded}/${total}</span>`;
     if (id === 'financeiro' && b?.vencidos) return `<span class="badge critical">${b.vencidos}</span>`;
+    if (id === 'cobrancas') { const n = state.data.transacoes.filter((t) => t.tipoEvento === 'cobranca_pendente').length; if (n) return `<span class="badge critical">${n}</span>`; }
     return '';
   };
   document.getElementById('tabs').innerHTML = TABS.map((t) => `<button type="button" role="tab" data-tab="${t.id}" aria-selected="${state.tab === t.id}">${t.label}${badge(t.id)}</button>`).join('');
@@ -722,6 +836,7 @@ export function render() {
   const f = filtered();
   const content = {
     visao: () => { const d = sectionDecisao(f); return sectionOverview(f) + d.acoes; },
+    cobrancas: () => sectionCobrancas(f),
     financeiro: () => {
       const d = sectionDecisao(f);
       return state.data.boletos.length ? d.caixa + sectionBoletos(f) + sectionReposicao(f) : `<section><p class="empty">Importe os <b>boletos de reabastecimento</b> na aba Dados para ver caixa, vencimentos e reposição × vendas.</p></section>`;

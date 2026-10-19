@@ -5,7 +5,7 @@ relatórios exportados do painel Market4u direto no navegador, sem servidor nem 
 
 | Relatório | Export do painel | O que alimenta |
 | --- | --- | --- |
-| Transações | `cliente_transacoes.csv` | faturamento, ticket, conversão de carrinhos, loja, hora, canal (APP/POS), meio de pagamento |
+| Transações | `cliente_transacoes.csv` | faturamento, ticket, funil de sessões, cobranças, loja, hora, canal (APP/POS), meio de pagamento |
 | Produtos vendidos | `relatorios-produtos-vendidos-*.csv` | receita, custo e margem por produto, categoria e fabricante; perfil de quem compra |
 | Boletos de reabastecimento | `vendasdemercadoriasdocdboletos_*.csv` | vencidos, a vencer, próximos vencimentos, lista com link do boleto |
 | Inventário | `sistema_pdv_inventario_relatorio_*.csv` | posição de estoque a custo e a venda, perdas (faltas na contagem), acuracidade, rupturas, reposição prioritária |
@@ -33,6 +33,7 @@ anonimizadas de `data/sample/` (um dia de operação).
 | --- | --- |
 | Visão geral | cartões-resumo (com variação vs período anterior) e a lista "O que fazer" |
 | Financeiro | caixa dos próximos 14 dias, boletos (situação, vencimentos, lista) e reposição × vendas |
+| Cobranças | itens levados sem pagamento: pendente, recuperado, taxa de recuperação, envelhecimento, por loja e semana, lista com link de pagamento, clientes em cobrança com risco |
 | Vendas | por loja, hora, dia, meio de pagamento, canal, carrinhos abandonados e últimas transações |
 | Produtos | top 10, categorias, fabricantes, quem compra, quem paga a conta e margem a revisar |
 | Operação | estoque (último inventário por loja): valor, perdas, acuracidade, rupturas, reposição prioritária; devoluções ao CD |
@@ -76,7 +77,13 @@ usa sempre o último inventário de cada loja (é uma foto), e os boletos não t
 
 ## Regras de negócio adotadas
 
-- **Faturamento** soma só eventos `Compra efetuada`; `No carrinho` conta como carrinho abandonado.
+- **Eventos da transação** (coluna Tipo): `Compra efetuada` é venda; `No carrinho` é carrinho abandonado (pode ter valor);
+  `Compra removida` é compra cancelada antes do pagamento; `Compra estornada` é venda estornada; `Cobrança pendente` é
+  item levado sem pagar com link de pagamento gerado; `Pagamento efetuada (cobrança)` é cobrança recuperada.
+- **Faturamento** soma só `Compra efetuada`. Cobranças pagas aparecem à parte como "recuperado". A **conversão de
+  sessões** é compras ÷ (compras + carrinhos abandonados + compras removidas).
+- **Cobranças**: a taxa de recuperação compara pagas com pendentes + pagas do período. Uma cobrança paga aparece na data
+  do pagamento, não na da cobrança original. Risco alto = cliente reincidente ou pendência de cliente bloqueado/desativado.
 - **Margem** = valor de venda − valor de custo do relatório de produtos.
 - **Situação do boleto** é calculada pela data de hoje: pago → vencido → vence em até 3 dias → a vencer. O campo `Status` do export só muda quando o painel atualiza.
 - **Boletos não têm loja**: o filtro de loja não se aplica a eles.

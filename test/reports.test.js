@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { loadReport, detectReportType, classifyPayment, splitTipo, situacaoBoleto, mergeRecords } from '../src/reports.js';
+import { loadReport, detectReportType, classifyPayment, splitTipo, situacaoBoleto, mergeRecords, classifyEvento } from '../src/reports.js';
 
 const sample = (name) => new Uint8Array(readFileSync(new URL(`../data/sample/${name}`, import.meta.url)));
 
@@ -19,6 +19,10 @@ test('classifyPayment separa meio e bandeira', () => {
   assert.deepEqual(classifyPayment('Pagbank_pos | POS Débito (maestro)'), { meio: 'Débito', bandeira: 'maestro' });
   assert.deepEqual(classifyPayment('PagBank | MASTERCARD'), { meio: 'Cartão', bandeira: 'mastercard' });
   assert.deepEqual(classifyPayment('--'), { meio: null, bandeira: null });
+  assert.equal(classifyPayment('Sodexo | Pluxee (Sodexo)').meio, 'Voucher');
+  assert.equal(classifyPayment('VR').meio, 'Voucher');
+  assert.equal(classifyPayment('Pagbank_pos | POS Voucher (elo)').meio, 'Voucher');
+  assert.equal(classifyPayment('Gerencianet | Boleto').meio, 'Boleto');
 });
 
 test('splitTipo separa evento e categoria', () => {
@@ -29,9 +33,8 @@ test('splitTipo separa evento e categoria', () => {
 test('transações: lê o export Latin-1 e normaliza', () => {
   const { type, records } = loadReport(sample('transacoes.csv'));
   assert.equal(type, 'transacoes');
-  assert.equal(records.length, 20);
-  const first = records[0];
-  assert.equal(first.id, '73502437');
+  assert.equal(records.length, 2325);
+  const first = records.find((t) => t.id === '73502437');
   assert.equal(first.pdx, 'CONDOMINIO ID JAUAPERI');
   assert.equal(first.compra, true);
   assert.equal(first.totalCents, 649);
@@ -41,8 +44,40 @@ test('transações: lê o export Latin-1 e normaliza', () => {
   assert.equal(first.cpfNaNota, true);
   const carrinho = records.find((t) => t.evento === 'No carrinho');
   assert.equal(carrinho.compra, false);
-  assert.equal(carrinho.totalCents, 0);
-  assert.equal(records.filter((t) => t.compra).length, 14);
+  assert.equal(carrinho.tipoEvento, 'carrinho');
+  const porTipo = records.reduce((a, t) => ({ ...a, [t.tipoEvento]: (a[t.tipoEvento] ?? 0) + 1 }), {});
+  assert.deepEqual(porTipo, { compra: 1934, carrinho: 139, removida: 244, cobranca_pendente: 5, cobranca_paga: 2, estornada: 1 });
+});
+
+test('transações: cobranças trazem link, taxa e forma', () => {
+  const { records } = loadReport(sample('transacoes.csv'));
+  const pend = records.find((t) => t.id === '73280051');
+  assert.equal(pend.tipoEvento, 'cobranca_pendente');
+  assert.equal(pend.cobranca, true);
+  assert.equal(pend.compra, false);
+  assert.equal(pend.totalCents, 37276);
+  assert.equal(pend.taxaCobranca, true);
+  assert.equal(pend.idLinkPagamento, '425442');
+  assert.match(pend.linkPagamento, /^https:\/\/api\.market4u\.com\.br\/link-pagamento/);
+  assert.equal(pend.meioPagamento, 'Boleto');
+  const paga = records.find((t) => t.id === '72083740');
+  assert.equal(paga.tipoEvento, 'cobranca_paga');
+  assert.equal(paga.meioPagamento, 'Pix');
+  assert.ok(paga.nfce);
+  const removida = records.find((t) => t.evento === 'Compra removida');
+  assert.equal(removida.tipoEvento, 'removida');
+  assert.equal(records.find((t) => t.id === '73045002').tipoEvento, 'estornada');
+});
+
+test('classifyEvento cobre variações', () => {
+  assert.equal(classifyEvento('Compra efetuada (Bebidas)'), 'compra');
+  assert.equal(classifyEvento('No carrinho (ADEGA)'), 'carrinho');
+  assert.equal(classifyEvento('Compra removida (Gôndola)'), 'removida');
+  assert.equal(classifyEvento('Compra estornada'), 'estornada');
+  assert.equal(classifyEvento('Cobrança pendente'), 'cobranca_pendente');
+  assert.equal(classifyEvento('Pagamento efetuada (cobrança)'), 'cobranca_paga');
+  assert.equal(classifyEvento('Cobrança paga'), 'cobranca_paga');
+  assert.equal(classifyEvento('???'), 'outro');
 });
 
 test('produtos: custo, venda e código Excel', () => {

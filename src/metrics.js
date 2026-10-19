@@ -91,19 +91,32 @@ export function listPdx(transacoes, produtos) {
 
 // --- Vendas (transações) -----------------------------------------------------
 
+/** Sessões que contam no funil de conversão: compra, carrinho abandonado e compra removida. */
+const noFunil = (t) => t.tipoEvento === 'compra' || t.tipoEvento === 'carrinho' || t.tipoEvento === 'removida';
+
 export function vendasKpis(transacoes) {
   const compras = transacoes.filter((t) => t.compra);
-  const abandonos = transacoes.filter((t) => !t.compra);
+  const carrinhos = transacoes.filter((t) => t.tipoEvento === 'carrinho');
+  const removidas = transacoes.filter((t) => t.tipoEvento === 'removida');
+  const estornadas = transacoes.filter((t) => t.tipoEvento === 'estornada');
+  const cobrancasPagas = transacoes.filter((t) => t.tipoEvento === 'cobranca_paga');
+  const sessoes = transacoes.filter(noFunil);
   const faturamento = sum(compras, (t) => t.totalCents);
   const clientes = new Set(compras.map((t) => t.clienteId).filter(Boolean));
   const novos = compras.filter((t) => t.comprasCliente <= 1).length;
   return {
     faturamentoCents: faturamento,
+    recuperadoCents: sum(cobrancasPagas, (t) => t.totalCents),
     compras: compras.length,
     ticketMedioCents: compras.length ? Math.round(faturamento / compras.length) : 0,
     itensPorCompra: compras.length ? sum(compras, (t) => t.qtdeProdutos) / compras.length : 0,
-    carrinhosAbandonados: abandonos.length,
-    taxaConversao: transacoes.length ? compras.length / transacoes.length : 0,
+    carrinhosAbandonados: carrinhos.length,
+    valorCarrinhosCents: sum(carrinhos, (t) => t.totalCents),
+    comprasRemovidas: removidas.length,
+    estornos: estornadas.length,
+    estornosValorCents: sum(estornadas, (t) => t.totalCents),
+    sessoes: sessoes.length,
+    taxaConversao: sessoes.length ? compras.length / sessoes.length : 0,
     clientesUnicos: clientes.size,
     clientesNovos: novos,
     descontosCents: sum(compras, (t) => t.descontoCents),
@@ -169,10 +182,19 @@ export function porDia(transacoes) {
 
 export const abandonosPorLoja = (transacoes) =>
   aggregate(
-    transacoes.filter((t) => !t.compra),
+    transacoes.filter((t) => t.tipoEvento === 'carrinho'),
     (t) => t.pdx,
     () => 1,
+    { valor: (items) => sum(items, (t) => t.totalCents) },
   );
+
+export const ORDEM_FUNIL = ['compra', 'carrinho', 'removida', 'estornada', 'cobranca_pendente', 'cobranca_paga'];
+
+/** Contagem e valor por tipo de evento, na ordem do funil. */
+export function funilEventos(transacoes) {
+  const rows = aggregate(transacoes, (t) => t.tipoEvento, (t) => t.totalCents);
+  return ORDEM_FUNIL.map((k) => rows.find((r) => r.key === k) ?? { key: k, value: 0, count: 0 }).filter((r) => r.count > 0 || ['compra', 'carrinho', 'removida'].includes(r.key));
+}
 
 // --- Produtos ----------------------------------------------------------------
 
@@ -332,10 +354,12 @@ export function comparativoLojas(transacoes, produtos) {
   const rows = [];
   for (const [pdx, items] of porPdx) {
     const compras = items.filter((t) => t.compra);
+    const sessoes = items.filter(noFunil);
     const fat = sum(compras, (t) => t.totalCents);
     const prods = prodPorPdx.get(pdx) ?? [];
     const receita = sum(prods, (p) => p.vendaCents);
     const custo = sum(prods, (p) => p.custoCents);
+    const pendentes = items.filter((t) => t.tipoEvento === 'cobranca_pendente');
     rows.push({
       key: pdx,
       pdxId: items[0].pdxId,
@@ -344,9 +368,13 @@ export function comparativoLojas(transacoes, produtos) {
       compras: compras.length,
       ticketCents: compras.length ? Math.round(fat / compras.length) : 0,
       itensPorCompra: compras.length ? sum(compras, (t) => t.qtdeProdutos) / compras.length : 0,
-      sessoes: items.length,
-      abandonos: items.length - compras.length,
-      conversao: items.length ? compras.length / items.length : 0,
+      sessoes: sessoes.length,
+      abandonos: sessoes.length - compras.length,
+      carrinhos: items.filter((t) => t.tipoEvento === 'carrinho').length,
+      removidas: items.filter((t) => t.tipoEvento === 'removida').length,
+      cobrancasPendentes: pendentes.length,
+      cobrancasPendentesCents: sum(pendentes, (t) => t.totalCents),
+      conversao: sessoes.length ? compras.length / sessoes.length : 0,
       pctApp: compras.length ? compras.filter((t) => t.via === 'APP').length / compras.length : 0,
       clientes: new Set(compras.map((t) => t.clienteId)).size,
       margemPct: receita ? (receita - custo) / receita : null,
@@ -418,14 +446,14 @@ export function topClientes(transacoes, limit = 10) {
 
 export const abandonosPorCategoria = (transacoes) =>
   aggregate(
-    transacoes.filter((t) => !t.compra),
+    transacoes.filter((t) => t.tipoEvento === 'carrinho'),
     (t) => t.categoriaEvento ?? '(sem categoria)',
     () => 1,
   );
 
 export const abandonosPorCanal = (transacoes) =>
   aggregate(
-    transacoes.filter((t) => !t.compra),
+    transacoes.filter((t) => t.tipoEvento === 'carrinho'),
     (t) => t.via ?? '(sem canal)',
     () => 1,
   );
@@ -488,7 +516,7 @@ export function fluxoCaixa(comSituacao, mediaDiariaCents, hoje, dias = 14) {
  * Lista priorizada do que fazer. Cada item: { tone: critical|warning|info|good, titulo, detalhe, acao }.
  * Regras simples e explícitas; o gestor decide.
  */
-export function recomendacoes({ vendas, lojas, boletos, caixa, revisar, fiscal, abandonosCategoria, abandonos, diasComDados }) {
+export function recomendacoes({ vendas, lojas, boletos, caixa, revisar, fiscal, abandonosCategoria, cobrancas, diasComDados }) {
   const out = [];
   if (boletos && boletos.vencidos > 0) {
     out.push({
@@ -517,6 +545,16 @@ export function recomendacoes({ vendas, lojas, boletos, caixa, revisar, fiscal, 
       acao: caixa.diasParaCobrir ? `Reservar caixa extra ou negociar prazo: seriam ${caixa.diasParaCobrir} dias de venda para cobrir.` : 'Reservar caixa extra ou negociar prazo com o CD.',
     });
   }
+  if (cobrancas && cobrancas.pendentes > 0) {
+    const antiga = cobrancas.maisAntigaDias ?? 0;
+    out.push({
+      tone: antiga > 7 || cobrancas.pendentesCents >= 30000 ? 'critical' : 'warning',
+      titulo: `${cobrancas.pendentes} cobrança${cobrancas.pendentes > 1 ? 's' : ''} pendente${cobrancas.pendentes > 1 ? 's' : ''} de itens levados sem pagar`,
+      valorCents: cobrancas.pendentesCents,
+      detalhe: `A mais antiga está aberta há ${antiga} dia${antiga === 1 ? '' : 's'}${cobrancas.reincidentes ? ` · ${cobrancas.reincidentes} cliente${cobrancas.reincidentes > 1 ? 's' : ''} reincidente${cobrancas.reincidentes > 1 ? 's' : ''}` : ''}${cobrancas.pendentesBloqueados ? ` · ${cobrancas.pendentesBloqueados} de cliente já bloqueado ou desativado` : ''}.`,
+      acao: 'Reenviar o link de pagamento (aba Cobranças), ligar para quem deve mais de R$ 100 e bloquear no app quem passou de 7 dias sem pagar.',
+    });
+  }
   if (fiscal && fiscal.semNfce > 0) {
     out.push({
       tone: 'critical',
@@ -541,7 +579,7 @@ export function recomendacoes({ vendas, lojas, boletos, caixa, revisar, fiscal, 
     if (fraca.faturamentoCents < media * 0.5) {
       out.push({
         tone: 'info',
-        titulo: `${fraca.key} fatura ${Math.round((fraca.faturamentoCents / media) * 100)}% da média das lojas`,
+        titulo: `${fraca.key} fatura ${fraca.faturamentoCents / media < 0.01 ? 'menos de 1%' : `${Math.round((fraca.faturamentoCents / media) * 100)}%`} da média das lojas`,
         valorCents: fraca.faturamentoCents,
         detalhe: `${fraca.compras} compras e ticket ${fmtMoney(fraca.ticketCents)} no período.`,
         acao: 'Avaliar mix, visibilidade no condomínio e campanhas de cashback para essa loja.',
@@ -725,4 +763,127 @@ export function recomendacoesOperacao({ estoquePorLoja, retornos, retornosTop })
     });
   }
   return out;
+}
+
+
+// =============================================================================
+// Cobranças: recuperação de itens levados sem pagamento
+// =============================================================================
+
+export const AGING = [
+  { key: 'até 3 dias', max: 3 },
+  { key: '4–7 dias', max: 7 },
+  { key: '8–15 dias', max: 15 },
+  { key: '16–30 dias', max: 30 },
+  { key: 'mais de 30 dias', max: Infinity },
+];
+
+export function faixaAging(dias) {
+  return AGING.find((a) => dias <= a.max).key;
+}
+
+const statusRuim = (s) => /bloquead|desativ/i.test(s ?? '');
+
+/**
+ * KPIs de cobrança no período. `pendentes` são as cobranças ainda abertas; `pagas`,
+ * as recuperadas. A taxa de recuperação compara pagas com o total emitido que aparece no período.
+ */
+export function cobrancasKpis(transacoes, hoje) {
+  const pendentes = transacoes
+    .filter((t) => t.tipoEvento === 'cobranca_pendente')
+    .map((t) => ({ ...t, dias: t.data ? Math.max(0, daysBetween(t.data, hoje)) : 0 }))
+    .sort((a, b) => b.dias - a.dias || b.totalCents - a.totalCents);
+  const pagas = transacoes.filter((t) => t.tipoEvento === 'cobranca_paga').sort((a, b) => (b.dataHora ?? '').localeCompare(a.dataHora ?? ''));
+  const pendentesCents = sum(pendentes, (t) => t.totalCents);
+  const pagasCents = sum(pagas, (t) => t.totalCents);
+  const emitidas = pendentes.length + pagas.length;
+  const porCliente = groupBy([...pendentes, ...pagas], (t) => t.clienteId ?? t.cliente);
+  const reincidentes = [...porCliente.values()].filter((l) => l.length >= 2).length;
+  const aging = AGING.map((a) => {
+    const items = pendentes.filter((t) => faixaAging(t.dias) === a.key);
+    return { key: a.key, value: sum(items, (t) => t.totalCents), count: items.length };
+  });
+  return {
+    emitidas,
+    emitidasCents: pendentesCents + pagasCents,
+    pendentes: pendentes.length,
+    pendentesCents,
+    pagas: pagas.length,
+    pagasCents,
+    taxaRecuperacaoValor: pendentesCents + pagasCents ? pagasCents / (pendentesCents + pagasCents) : null,
+    taxaRecuperacaoQtd: emitidas ? pagas.length / emitidas : null,
+    ticketPendenteCents: pendentes.length ? Math.round(pendentesCents / pendentes.length) : 0,
+    comTaxa: pendentes.filter((t) => t.taxaCobranca).length,
+    idadeMediaDias: pendentes.length ? sum(pendentes, (t) => t.dias) / pendentes.length : 0,
+    maisAntigaDias: pendentes.length ? pendentes[0].dias : null,
+    reincidentes,
+    pendentesBloqueados: pendentes.filter((t) => statusRuim(t.statusCliente)).length,
+    itensPendentes: sum(pendentes, (t) => t.qtdeProdutos),
+    aging,
+    listaPendentes: pendentes,
+    listaPagas: pagas,
+  };
+}
+
+export function cobrancasPorLoja(transacoes) {
+  const rows = [];
+  for (const [pdx, items] of groupBy(transacoes.filter((t) => t.cobranca || t.compra), (t) => t.pdx)) {
+    const pend = items.filter((t) => t.tipoEvento === 'cobranca_pendente');
+    const pagas = items.filter((t) => t.tipoEvento === 'cobranca_paga');
+    const fat = sum(items.filter((t) => t.compra), (t) => t.totalCents);
+    const pendCents = sum(pend, (t) => t.totalCents);
+    const pagasCents = sum(pagas, (t) => t.totalCents);
+    if (pend.length + pagas.length === 0) continue;
+    rows.push({
+      key: pdx,
+      pendentes: pend.length,
+      pendentesCents: pendCents,
+      pagas: pagas.length,
+      pagasCents,
+      value: pendCents,
+      count: pend.length,
+      recuperacao: pendCents + pagasCents ? pagasCents / (pendCents + pagasCents) : null,
+      pctFaturamento: fat ? (pendCents + pagasCents) / fat : null,
+    });
+  }
+  return rows.sort((a, b) => b.pendentesCents - a.pendentesCents || b.pagasCents - a.pagasCents);
+}
+
+/** Emitidas × pagas por semana (quantidade e valor). */
+export function cobrancasPorSemana(transacoes) {
+  const cob = transacoes.filter((t) => t.cobranca && t.data);
+  const semanas = [...new Set(cob.map((t) => isoWeek(t.data)))].sort();
+  return semanas.map((w) => {
+    const items = cob.filter((t) => isoWeek(t.data) === w);
+    const pend = items.filter((t) => t.tipoEvento === 'cobranca_pendente');
+    const pagas = items.filter((t) => t.tipoEvento === 'cobranca_paga');
+    return { key: w, pendentes: pend.length, pendentesCents: sum(pend, (t) => t.totalCents), pagas: pagas.length, pagasCents: sum(pagas, (t) => t.totalCents), value: sum(items, (t) => t.totalCents), count: items.length };
+  });
+}
+
+/** Clientes com cobrança: histórico, pendências e sinal de risco (reincidente, bloqueado, desativado). */
+export function clientesEmCobranca(transacoes) {
+  const cob = transacoes.filter((t) => t.cobranca);
+  const rows = [];
+  for (const [id, items] of groupBy(cob, (t) => t.clienteId ?? t.cliente)) {
+    const pend = items.filter((t) => t.tipoEvento === 'cobranca_pendente');
+    const pagas = items.filter((t) => t.tipoEvento === 'cobranca_paga');
+    const ultimo = items.map((t) => t.dataHora).sort().pop();
+    const ref = items.find((t) => t.dataHora === ultimo);
+    rows.push({
+      key: id,
+      nome: ref.cliente ?? id,
+      status: ref.statusCliente,
+      lojas: [...new Set(items.map((t) => t.pdx))].join(', '),
+      pendentes: pend.length,
+      pendentesCents: sum(pend, (t) => t.totalCents),
+      pagas: pagas.length,
+      pagasCents: sum(pagas, (t) => t.totalCents),
+      historicoCents: Math.max(...items.map((t) => t.totalGastoCliente)),
+      comprasHistorico: Math.max(...items.map((t) => t.comprasCliente)),
+      ultima: ultimo,
+      risco: pend.length >= 2 || (pend.length > 0 && statusRuim(ref.statusCliente)) ? 'alto' : pend.length > 0 ? 'medio' : 'baixo',
+    });
+  }
+  return rows.sort((a, b) => b.pendentesCents - a.pendentesCents || b.pagasCents - a.pagasCents);
 }
