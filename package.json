@@ -1,0 +1,13 @@
+{
+  "name": "enrico-market4u",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dashboard de gestão para minimercados autônomos (relatórios Market4u)",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "serve": "node scripts/serve.js",
+    "build": "node scripts/build.js"
+  }
+}

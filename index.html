@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gestão Speed Shop Market</title>
+<meta name="description" content="Dashboard de gestão dos minimercados autônomos a partir dos relatórios Market4u: transações, produtos vendidos e boletos de reabastecimento.">
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+<header class="topbar"><div class="topbar-inner">
+  <div class="brand"><h1>Speed Shop Market</h1><span class="sub">Minimercados autônomos · relatórios Market4u</span></div>
+  <div class="filters" id="filters"></div>
+</div></header>
+<main class="page" id="main"></main>
+<footer class="page">Os dados ficam só neste navegador (armazenamento local). Situação dos boletos calculada pela data de hoje.</footer>
+<div class="tooltip" id="tooltip" hidden></div>
+<script type="module">
+  import { start } from './src/app.js';
+  // Em desenvolvimento, carrega as amostras anonimizadas quando não há dados salvos.
+  try {
+    const names = { transacoes: 'transacoes.csv', produtos: 'produtos.csv', boletos: 'boletos.csv' };
+    const entries = await Promise.all(Object.entries(names).map(async ([k, f]) => {
+      const res = await fetch(`data/sample/${f}`);
+      if (!res.ok) throw new Error(f);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const { decodeBytes } = await import('./src/csv.js');
+      return [k, decodeBytes(bytes)];
+    }));
+    window.EM4U_SAMPLE = Object.fromEntries(entries);
+  } catch { /* sem amostras: começa vazio */ }
+  start();
+</script>
+</body>
+</html>
