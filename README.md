@@ -25,6 +25,23 @@ registros (chave: ID da transação / ID do boleto / item da venda). Os dados fi
 no `localStorage` do navegador. Sem dados salvos, a página mostra as amostras
 anonimizadas de `data/sample/` (um dia de operação).
 
+## Camada de decisão
+
+- **O que fazer**: lista priorizada (crítico → alerta → informação) gerada por regras explícitas em `recomendacoes()`:
+  boletos vencidos e a vencer, caixa dos próximos 7 dias, compras sem NFC-e, lojas com conversão abaixo de 60%,
+  loja faturando menos da metade da média, produtos com margem abaixo de 30%, categoria com mais carrinhos
+  abandonados e entrada de clientes novos.
+- **Caixa: próximos 14 dias**: o que vence em cada dia (todos os boletos abertos, inclusive atrasados), acumulado
+  a pagar e receita projetada pela média diária de faturamento do período filtrado; saldo negativo = precisa de caixa extra.
+- **Comparativo de lojas**: faturamento, share, ticket, itens por compra, conversão, % app, clientes e margem, com
+  mapa de calor loja × período do dia para planejar reposição e visitas.
+- **Produtos com margem a revisar**: preço médio, custo, margem e o preço unitário que atingiria 30% com o custo
+  atual; "margem perdida" é quanto faltou para 30% no período. "Quem paga a conta" ordena produtos pela margem em R$.
+- **Clientes**: faturamento por faixa de recorrência (histórico que o painel informa), top 10 clientes e carrinhos
+  abandonados por categoria e canal.
+- **Vs período anterior**: com filtro de 7 dias, 30 dias ou personalizado, os cartões da visão geral mostram a
+  variação contra a janela anterior de mesmo tamanho.
+
 ## Estrutura
 
 - `src/csv.js` – parser CSV e decodificação Latin-1/UTF-8

@@ -1,7 +1,7 @@
 // Estado, importação dos relatórios e renderização do dashboard.
 import { loadReport, mergeRecords, REPORT_TYPES, SITUACOES } from './reports.js';
 import * as M from './metrics.js';
-import { hbar, columns, stacked, legend, table, emptyChart } from './charts.js';
+import { hbar, columns, stacked, legend, table, heatmap, emptyChart } from './charts.js';
 import { money, moneyShort, number, percent, shortDate, longDate, dateTime, weekday, hourLabel, escapeHtml as esc } from './format.js';
 import { todayLocal, addDays } from './parse.js';
 
@@ -172,6 +172,14 @@ function sectionImport() {
   </section>`;
 }
 
+function delta(atual, anterior, { invert = false, fmt = percent } = {}) {
+  const d = M.variacao(atual, anterior);
+  if (d == null) return '';
+  const good = invert ? d < 0 : d > 0;
+  const sign = d > 0 ? '+' : '';
+  return ` · <span class="delta ${d === 0 ? '' : good ? 'up' : 'down'}" title="Período anterior: ${esc(fmt(anterior))}">${sign}${esc(percent(d))}</span> vs período anterior`;
+}
+
 function sectionOverview(f) {
   const v = M.vendasKpis(f.transacoes);
   const p = M.produtosKpis(f.produtos);
@@ -179,13 +187,18 @@ function sectionOverview(f) {
   const temT = state.data.transacoes.length > 0;
   const temP = state.data.produtos.length > 0;
   const temB = state.data.boletos.length > 0;
+  // período anterior de mesmo tamanho, quando o filtro tem início e fim
+  const ant = M.periodoAnterior(f.range);
+  const pdxId = state.filter.pdxId || null;
+  const vAnt = ant ? M.vendasKpis(M.filterTransacoes(state.data.transacoes, { ...ant, pdxId })) : null;
+  const pAnt = ant ? M.produtosKpis(M.filterProdutos(state.data.produtos, { ...ant, pdxId })) : null;
   const tiles = [];
   if (temT) {
-    tiles.push(tile('Faturamento', money(v.faturamentoCents), `${number(v.compras)} compras · ticket ${money(v.ticketMedioCents)}`));
-    tiles.push(tile('Conversão de carrinhos', percent(v.taxaConversao), `${number(v.carrinhosAbandonados)} carrinhos abandonados`, v.taxaConversao < 0.6 ? 'warning' : ''));
-    tiles.push(tile('Clientes', number(v.clientesUnicos), `${number(v.clientesNovos)} na primeira compra`));
+    tiles.push(tile('Faturamento', money(v.faturamentoCents), `${number(v.compras)} compras · ticket ${money(v.ticketMedioCents)}${vAnt ? delta(v.faturamentoCents, vAnt.faturamentoCents, { fmt: money }) : ''}`));
+    tiles.push(tile('Conversão de carrinhos', percent(v.taxaConversao), `${number(v.carrinhosAbandonados)} carrinhos abandonados${vAnt ? delta(v.taxaConversao, vAnt.taxaConversao) : ''}`, v.taxaConversao < 0.6 ? 'warning' : ''));
+    tiles.push(tile('Clientes', number(v.clientesUnicos), `${number(v.clientesNovos)} na primeira compra${vAnt ? delta(v.clientesUnicos, vAnt.clientesUnicos, { fmt: number }) : ''}`));
   }
-  if (temP) tiles.push(tile('Margem bruta', percent(p.margemPct), `${money(p.margemCents)} sobre ${money(p.receitaCents)} em ${number(p.itens)} itens`, p.margemPct < 0.3 ? 'warning' : 'good'));
+  if (temP) tiles.push(tile('Margem bruta', percent(p.margemPct), `${money(p.margemCents)} sobre ${money(p.receitaCents)} em ${number(p.itens)} itens${pAnt ? delta(p.margemCents, pAnt.margemCents, { fmt: money }) : ''}`, p.margemPct < 0.3 ? 'warning' : 'good'));
   if (temB) {
     tiles.push(tile('Boletos em aberto', money(b.abertosCents), `${number(b.abertos)} boletos · próximo ${b.proximoVencimento ? `${shortDate(b.proximoVencimento.data)} (${money(b.proximoVencimento.valorCents)})` : '—'}`));
     tiles.push(tile('Vencidos', money(b.vencidosCents), b.vencidos ? `${number(b.vencidos)} boletos${b.bloqueiaInadimplente ? ' · bloqueio por inadimplência ativo' : ''}` : 'nenhum boleto vencido', b.vencidos ? 'critical' : 'good'));
@@ -201,6 +214,118 @@ function scopeLabel(range) {
   const loja = state.filter.pdxId ? M.listPdx(state.data.transacoes, state.data.produtos).find((l) => l.id === state.filter.pdxId)?.nome : 'todas as lojas';
   const periodo = range.from || range.to ? `${range.from ? longDate(range.from) : '…'} a ${range.to ? longDate(range.to) : '…'}` : 'todo o período importado';
   return `${periodo} · ${loja}`;
+}
+
+function sectionDecisao(f) {
+  if (!hasData()) return '';
+  const temT = state.data.transacoes.length > 0;
+  const temB = state.data.boletos.length > 0;
+  const vendas = temT ? M.vendasKpis(f.transacoes) : null;
+  const lojas = temT ? M.comparativoLojas(f.transacoes, f.produtos) : [];
+  const b = temB ? M.boletosKpis(state.data.boletos, state.hoje) : null; // caixa olha todos os boletos abertos, não só o período
+  const media = temT ? M.mediaDiaria(f.transacoes) : 0;
+  const diasComDados = temT ? new Set(f.transacoes.filter((t) => t.compra).map((t) => t.data)).size : 0;
+  const caixa = b ? M.fluxoCaixa(b.comSituacao, media, state.hoje, 14) : null;
+  const revisar = M.produtosParaRevisar(f.produtos, 0.3);
+  const recs = M.recomendacoes({
+    vendas, lojas, boletos: b, caixa, revisar,
+    fiscal: vendas ? { semNfce: vendas.compras - vendas.nfceEmitidas } : null,
+    abandonosCategoria: temT ? M.abandonosPorCategoria(f.transacoes) : [],
+    diasComDados,
+  });
+  const lista = recs.length
+    ? `<ul class="actions">${recs.map((r) => `<li class="action ${r.tone}"><span class="stripe"></span><div><div class="title">${esc(r.titulo)}</div><div class="detail">${esc(r.detalhe)}</div><div class="todo"><b>O que fazer:</b> ${esc(r.acao)}</div></div>${r.valorCents != null ? `<div class="amount">${esc(money(r.valorCents))}</div>` : '<span></span>'}</li>`).join('')}</ul>`
+    : `<p class="empty">Nada a recomendar com os dados carregados.</p>`;
+
+  let caixaHtml = '';
+  if (caixa) {
+    const rows = caixa.rows;
+    const chart = columns(rows.map((r) => ({ ...r, value: r.aPagarCents })), {
+      fmt: money0, width: wideChartWidth(),
+      labelFn: (d, i, full) => (full ? `${weekday(d)} ${longDate(d)}` : shortDate(d)),
+      every: 1,
+      color: (r) => (r.saldoCents < 0 ? 'var(--critical)' : 'var(--series-1)'),
+      tipLines: (r) => [`vence ${money(r.aPagarCents)} (${r.boletos} boletos)`, `acumulado a pagar ${money(r.acumuladoCents)}`, `receita projetada ${money(r.receitaProjetadaCents)}`, `saldo ${money(r.saldoCents)}`],
+    });
+    const tab = table(
+      [
+        { label: 'Dia', get: (r) => `${weekday(r.key)} ${longDate(r.key)}` },
+        { label: 'Vence no dia', num: true, get: (r) => (r.aPagarCents ? `${money(r.aPagarCents)} (${r.boletos})` : '—') },
+        { label: 'Acumulado a pagar', num: true, get: (r) => money(r.acumuladoCents) },
+        { label: 'Receita projetada', num: true, get: (r) => money(r.receitaProjetadaCents) },
+        { label: 'Saldo', num: true, html: true, get: (r) => `<span class="${r.saldoCents < 0 ? 'neg' : 'pos'}">${esc(money(r.saldoCents))}</span>` },
+      ],
+      rows,
+    ).replace(/<td class="num">(<span class="(neg|pos)">)/g, '<td class="num $2">$1');
+    const resumo = `<p class="kicker">Atrasados <b>${esc(money(caixa.atrasadoCents))}</b> (${caixa.atrasados}) · vence em 7 dias <b>${esc(money(caixa.aPagar7dCents))}</b> · receita projetada em 7 dias <b>${esc(money(caixa.receita7dCents))}</b> (média de ${esc(money(media))}/dia${diasComDados ? ` em ${diasComDados} dia${diasComDados > 1 ? 's' : ''} com venda` : ''}) · saldo <b class="${caixa.saldo7dCents < 0 ? 'delta down' : 'delta up'}">${esc(money(caixa.saldo7dCents))}</b>${caixa.diasParaCobrir ? ` · seriam necessários ${caixa.diasParaCobrir} dias de venda para cobrir tudo o que vence até lá` : ''}</p>`;
+    caixaHtml = card({
+      title: 'Caixa: próximos 14 dias', desc: 'boletos abertos por vencimento (vermelho = acumulado maior que a receita projetada)',
+      chart: resumo + chart,
+      tableHtml: resumo + tab,
+      span: true,
+    });
+  }
+  return `<section><h2>O que fazer <span class="scope">prioridades calculadas a partir dos relatórios · ${esc(scopeLabel(f.range))}</span></h2>${lista}${caixaHtml ? `<div class="grid" style="margin-top:12px">${caixaHtml}</div>` : ''}</section>`;
+}
+
+function sectionLojas(f) {
+  if (state.data.transacoes.length === 0) return '';
+  const lojas = M.comparativoLojas(f.transacoes, f.produtos);
+  if (lojas.length === 0) return '';
+  const temP = state.data.produtos.length > 0;
+  const cols = [
+    { label: '#', html: true, get: (r) => `<span class="rank">${lojas.indexOf(r) + 1}</span>` },
+    { label: 'Loja', get: (r) => r.key },
+    { label: 'Faturamento', num: true, get: (r) => money(r.faturamentoCents) },
+    { label: 'Share', num: true, get: (r) => percent(r.share) },
+    { label: 'Compras', num: true, get: (r) => number(r.compras) },
+    { label: 'Ticket', num: true, get: (r) => money(r.ticketCents) },
+    { label: 'Itens/compra', num: true, get: (r) => number(r.itensPorCompra) },
+    { label: 'Conversão', num: true, html: true, get: (r) => `<span class="${r.sessoes >= 5 && r.conversao < 0.6 ? 'neg' : ''}">${esc(percent(r.conversao))}</span> <span class="desc">(${r.abandonos} aband.)</span>` },
+    { label: '% app', num: true, get: (r) => percent(r.pctApp) },
+    { label: 'Clientes', num: true, get: (r) => number(r.clientes) },
+  ];
+  if (temP) cols.push({ label: 'Margem', num: true, html: true, get: (r) => (r.margemPct == null ? '—' : `<span class="${r.margemPct < 0.3 ? 'neg' : ''}">${esc(percent(r.margemPct))}</span>`) });
+  const heat = M.heatmapLojaPeriodo(f.transacoes);
+  return `<section><h2>Lojas <span class="scope">comparativo e horário de pico</span></h2>
+    <div class="grid"><div class="card span-2"><div class="card-head"><h3>Comparativo de lojas</h3><span class="desc">ordenado por faturamento · vermelho = conversão abaixo de 60% ou margem abaixo de 30%</span></div>${table(cols, lojas)}</div>
+    <div class="card span-2"><div class="card-head"><h3>Faturamento por loja e período do dia</h3><span class="desc">quando cada loja vende: orienta reposição e visitas</span></div>${heatmap(heat, { fmt: money })}</div></div></section>`;
+}
+
+function sectionClientes(f) {
+  if (state.data.transacoes.length === 0) return '';
+  const rec = M.recorrencia(f.transacoes);
+  const top = M.topClientes(f.transacoes, 10);
+  const cat = M.abandonosPorCategoria(f.transacoes);
+  const canal = M.abandonosPorCanal(f.transacoes);
+  const recColors = ['var(--series-4)', 'var(--series-1)', 'var(--series-3)', 'var(--series-7)'];
+  const cards = [
+    card({
+      title: 'Fidelidade', desc: 'faturamento por histórico de compras do cliente',
+      chart: stacked(rec.filter((r) => r.value), { fmt: money, colors: rec.filter((r) => r.value).map((r) => recColors[M.FAIXAS_RECORRENCIA.indexOf(r.key)]) }),
+      legendHtml: legend(rec.map((r, i) => ({ label: `${r.key} · ${money(r.value)} · ${r.count}`, color: recColors[i] }))),
+      tableHtml: table(colsValor('Histórico do cliente'), rec),
+    }),
+    card({
+      title: 'Carrinhos abandonados', desc: 'por categoria e por canal',
+      chart: (cat.length ? hbar(cat, { fmt: (v) => `${number(v)}`, labelW: 190 }) : emptyChart()) + (canal.length ? stacked(canal, { fmt: (v) => `${number(v)} carrinhos`, colors: ['var(--series-1)', 'var(--series-2)'] }) : ''),
+      legendHtml: legend(canal.map((r, i) => ({ label: `${r.key} · ${number(r.value)}`, color: ['var(--series-1)', 'var(--series-2)'][i % 2] }))),
+      tableHtml: table([{ label: 'Categoria', get: (r) => r.key }, { label: 'Carrinhos', num: true, get: (r) => number(r.value) }], cat) + table([{ label: 'Canal', get: (r) => r.key }, { label: 'Carrinhos', num: true, get: (r) => number(r.value) }], canal),
+    }),
+  ];
+  const topHtml = table(
+    [
+      { label: '#', html: true, get: (r) => `<span class="rank">${top.indexOf(r) + 1}</span>` },
+      { label: 'Cliente', get: (r) => r.nome },
+      { label: 'Loja', get: (r) => r.loja },
+      { label: 'Gasto no período', num: true, get: (r) => money(r.value) },
+      { label: 'Compras no período', num: true, get: (r) => number(r.count) },
+      { label: 'Histórico', num: true, get: (r) => `${money(r.historicoCents)} em ${number(r.comprasHistorico)} compras` },
+      { label: 'Última compra', get: (r) => dateTime(r.ultima) },
+    ],
+    top,
+  );
+  return `<section><h2>Clientes <span class="scope">quem compra e quem desiste</span></h2><div class="grid">${cards.join('')}<div class="card span-2"><div class="card-head"><h3>Top 10 clientes</h3><span class="desc">no período, com o histórico que o painel informa</span></div>${topHtml}</div></div></section>`;
 }
 
 function sectionVendas(f) {
@@ -291,7 +416,31 @@ function sectionProdutos(f) {
       tableHtml: table(colsValor('Sexo'), sexo) + table(colsValor('Faixa etária'), faixas),
     }),
   ];
-  return `<section><h2>Produtos <span class="scope">relatório de produtos vendidos</span></h2><div class="grid">${cards.join('')}</div></section>`;
+  const revisar = M.produtosParaRevisar(p, 0.3, 15);
+  const contrib = M.contribuicaoMargem(p, 10);
+  cards.push(
+    card({
+      title: 'Quem paga a conta', desc: 'top 10 produtos por margem em R$',
+      chart: hbar(contrib, { fmt: money, labelW: 230, sub: (r) => `· ${number(r.quantidade)} un`, tipLines: (r) => [`margem ${money(r.value)}`, `receita ${money(r.receita)}`, `${number(r.quantidade)} unidades`] }),
+      tableHtml: table([{ label: 'Produto', get: (r) => r.key }, { label: 'Margem', num: true, get: (r) => money(r.value) }, { label: 'Receita', num: true, get: (r) => money(r.receita) }, { label: 'Unid.', num: true, get: (r) => number(r.quantidade) }], contrib),
+    }),
+  );
+  const revisarHtml = revisar.length
+    ? table(
+        [
+          { label: 'Produto', get: (r) => r.key },
+          { label: 'Categoria', get: (r) => r.categoria },
+          { label: 'Unid.', num: true, get: (r) => number(r.quantidade) },
+          { label: 'Preço médio', num: true, get: (r) => money(r.precoMedioCents) },
+          { label: 'Custo', num: true, get: (r) => money(r.custoMedioCents) },
+          { label: 'Margem', num: true, html: true, get: (r) => `<span class="neg">${esc(percent(r.margemPct))}</span>` },
+          { label: 'Preço p/ 30%', num: true, get: (r) => money(r.precoSugeridoCents) },
+          { label: 'Margem perdida', num: true, get: (r) => money(r.margemPerdidaCents) },
+        ],
+        revisar,
+      )
+    : `<p class="empty">Todos os produtos vendidos no período têm margem de 30% ou mais.</p>`;
+  return `<section><h2>Produtos <span class="scope">relatório de produtos vendidos</span></h2><div class="grid">${cards.join('')}<div class="card span-2"><div class="card-head"><h3>Produtos com margem a revisar</h3><span class="desc">abaixo de 30% · preço sugerido para atingir 30% com o custo atual · "margem perdida" = quanto faltou para 30% no período</span></div>${revisarHtml}</div></div></section>`;
 }
 
 function sectionBoletos(f) {
@@ -403,7 +552,7 @@ export function render() {
     return;
   }
   const f = filtered();
-  main.innerHTML = [sectionImport(), sectionOverview(f), sectionVendas(f), sectionProdutos(f), sectionBoletos(f), sectionReposicao(f), sectionTransacoes(f)].join('');
+  main.innerHTML = [sectionImport(), sectionOverview(f), sectionDecisao(f), sectionLojas(f), sectionVendas(f), sectionProdutos(f), sectionClientes(f), sectionBoletos(f), sectionReposicao(f), sectionTransacoes(f)].join('');
   bind();
 }
 

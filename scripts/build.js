@@ -33,8 +33,9 @@ const sample = {
 };
 const css = await read('src/styles.css');
 const html = (await read('index.html'))
-  .replace('<link rel="stylesheet" href="src/styles.css">', `<style>\n${css}\n</style>`)
-  .replace(/<script type="module">[\s\S]*?<\/script>/, `<script>\nwindow.EM4U_SAMPLE = ${JSON.stringify(sample).replace(/<\//g, '<\\/')};\n${bundle}\nstart();\n</script>`);
+  // substituições como função: um "$'" dentro do CSS/JS seria lido como padrão especial do replace
+  .replace('<link rel="stylesheet" href="src/styles.css">', () => `<style>\n${css}\n</style>`)
+  .replace(/<script type="module">[\s\S]*?<\/script>/, () => `<script>\nwindow.EM4U_SAMPLE = ${JSON.stringify(sample).replace(/<\//g, '<\\/')};\n${bundle}\nstart();\n</script>`);
 await mkdir(new URL('dist/', root), { recursive: true });
 await writeFile(new URL('dist/index.html', root), html);
 console.log(`dist/index.html (${(html.length / 1024).toFixed(0)} kB)`);

@@ -125,3 +125,22 @@ export function table(columns, rows) {
 export function emptyChart() {
   return `<p class="empty">Sem dados no período selecionado.</p>`;
 }
+
+/** Mapa de calor linha × coluna (uma cor, claro→escuro). rows: [{ key, cells: [{ key, value, count }], total }]. */
+export function heatmap({ rows, max, periodos }, { fmt }) {
+  if (rows.length === 0) return emptyChart();
+  const head = `<th>Loja</th>${periodos.map((p) => `<th class="num">${esc(p)}</th>`).join('')}<th class="num">Total</th>`;
+  const body = rows
+    .map((r) => {
+      const cells = r.cells
+        .map((c) => {
+          const a = max ? c.value / max : 0;
+          const alpha = c.value ? 0.12 + a * 0.78 : 0;
+          return `<td class="num heat" style="--a:${alpha.toFixed(2)}" ${tip(`${r.key} · ${c.key}`, [fmt(c.value), `${c.count} compras`])}>${c.value ? esc(fmt(c.value)) : '·'}</td>`;
+        })
+        .join('');
+      return `<tr><th scope="row">${esc(r.key)}</th>${cells}<td class="num"><b>${esc(fmt(r.total))}</b></td></tr>`;
+    })
+    .join('');
+  return `<div class="table-wrap"><table class="heatmap"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
