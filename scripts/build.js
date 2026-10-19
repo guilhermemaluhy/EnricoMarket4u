@@ -30,6 +30,8 @@ const sample = {
   transacoes: await readLatin('data/sample/transacoes.csv'),
   produtos: await readLatin('data/sample/produtos.csv'),
   boletos: await readLatin('data/sample/boletos.csv'),
+  retornos: await readLatin('data/sample/retornos.csv'),
+  inventario: await readLatin('data/sample/inventario.csv'),
 };
 const css = await read('src/styles.css');
 const html = (await read('index.html'))

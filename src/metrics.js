@@ -47,6 +47,26 @@ export function filterBoletos(list, { from, to } = {}) {
   return list.filter((b) => inRange(b.data ?? b.vencimento, { from, to }));
 }
 
+export function filterRetornos(list, { from, to, pdxId } = {}) {
+  return list.filter((r) => inRange(r.data, { from, to }) && (!pdxId || r.pdxId === pdxId));
+}
+
+/** O inventário identifica a loja pelo "Código PDX"; o mapa código→id vem do relatório de produtos. */
+export function mapaCodigoPdx(produtos) {
+  const map = new Map();
+  for (const p of produtos) if (p.codigoPdx && p.pdxId && !map.has(p.codigoPdx)) map.set(p.codigoPdx, p.pdxId);
+  return map;
+}
+
+export function filterInventario(list, { from, to, pdxId, pdxNome } = {}, mapa = new Map()) {
+  return list.filter((i) => {
+    if (!inRange(i.data, { from, to })) return false;
+    if (!pdxId) return true;
+    const id = mapa.get(i.codigoPdx);
+    return id ? id === pdxId : pdxNome != null && i.pdx === pdxNome;
+  });
+}
+
 export function dateBounds(records) {
   let min = null;
   let max = null;
@@ -535,7 +555,7 @@ export function recomendacoes({ vendas, lojas, boletos, caixa, revisar, fiscal, 
       titulo: `${revisar.length} produto${revisar.length > 1 ? 's' : ''} vendendo com margem abaixo de 30%`,
       valorCents: perdido,
       detalhe: `Margem deixada na mesa no período: ${fmtMoney(perdido)}. Maior impacto: ${revisar[0].key}.`,
-      acao: 'Revisar preços com a tabela "Produtos com margem a revisar".',
+      acao: 'Revisar preços com a tabela "Produtos com margem a revisar" (aba Produtos).',
     });
   }
   if (abandonosCategoria && abandonosCategoria.length > 0 && abandonosCategoria[0].key !== '(sem categoria)' && abandonosCategoria[0].value >= 2) {
@@ -562,3 +582,147 @@ export function recomendacoes({ vendas, lojas, boletos, caixa, revisar, fiscal, 
 }
 
 const fmtMoney = (c) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format((c ?? 0) / 100);
+
+
+// =============================================================================
+// Operação: inventário e remessas de retorno
+// =============================================================================
+
+/** Último inventário de cada loja (posição de estoque é uma foto; vale a mais recente). */
+export function ultimoInventarioPorLoja(inventario) {
+  const porLoja = groupBy(inventario, (i) => i.pdx);
+  const out = [];
+  for (const [pdx, items] of porLoja) {
+    const ultimo = items.reduce((a, i) => (i.dataHora > a ? i.dataHora : a), '');
+    const inv = items.filter((i) => i.dataHora === ultimo);
+    out.push({ pdx, inventario: inv[0].inventario, data: inv[0].data, itens: inv });
+  }
+  return out.sort((a, b) => a.pdx.localeCompare(b.pdx));
+}
+
+export function estoqueKpis(itens) {
+  const custo = sum(itens, (i) => i.posicaoAjustada * i.custoUnitCents);
+  const venda = sum(itens, (i) => i.posicaoAjustada * i.vendaUnitCents);
+  const faltas = itens.filter((i) => i.diferenca < 0);
+  const sobras = itens.filter((i) => i.diferenca > 0);
+  const perdaCusto = -sum(faltas, (i) => i.custoDiferencaCents);
+  const custoAnterior = sum(itens, (i) => i.posicaoAnterior * i.custoUnitCents);
+  return {
+    skus: itens.length,
+    unidades: sum(itens, (i) => i.posicaoAjustada),
+    custoCents: custo,
+    vendaCents: venda,
+    margemPotencialCents: venda - custo,
+    perdaUnidades: -sum(faltas, (i) => i.diferenca),
+    perdaCustoCents: perdaCusto,
+    perdaVendaCents: -sum(faltas, (i) => i.vendaDiferencaCents),
+    perdaPct: custoAnterior ? perdaCusto / custoAnterior : 0,
+    sobraUnidades: sum(sobras, (i) => i.diferenca),
+    sobraCustoCents: sum(sobras, (i) => i.custoDiferencaCents),
+    skusComFalta: faltas.length,
+    acuracidade: itens.length ? itens.filter((i) => i.diferenca === 0).length / itens.length : 0,
+    rupturas: itens.filter((i) => i.posicaoAjustada <= 0).length,
+    estoqueBaixo: itens.filter((i) => i.posicaoAjustada > 0 && i.posicaoAjustada <= 1).length,
+  };
+}
+
+export const perdasPorCategoria = (itens) =>
+  aggregate(
+    itens.filter((i) => i.diferenca < 0),
+    (i) => i.categoria,
+    (i) => -i.custoDiferencaCents,
+    { unidades: (items) => -sum(items, (i) => i.diferenca) },
+  );
+
+export const perdasTopProdutos = (itens, limit = 10) =>
+  aggregate(
+    itens.filter((i) => i.diferenca < 0),
+    (i) => i.produto,
+    (i) => -i.custoDiferencaCents,
+    { unidades: (items) => -sum(items, (i) => i.diferenca), categoria: (items) => items[0].categoria, loja: (items) => items[0].pdx },
+  ).slice(0, limit);
+
+export const estoquePorCategoria = (itens) =>
+  aggregate(itens, (i) => i.categoria, (i) => i.posicaoAjustada * i.custoUnitCents, {
+    unidades: (items) => sum(items, (i) => i.posicaoAjustada),
+    skus: (items) => items.length,
+    rupturas: (items) => items.filter((i) => i.posicaoAjustada <= 0).length,
+  });
+
+/**
+ * Itens zerados ou com 1 unidade, cruzados com o que vendeu no período (relatório de
+ * produtos) para priorizar reposição: o que vende e está acabando vem primeiro.
+ */
+export function reposicaoPrioritaria(itens, produtos, limit = 20) {
+  const vendidos = new Map();
+  for (const p of produtos) {
+    const k = p.ean || p.codigo;
+    vendidos.set(k, (vendidos.get(k) ?? 0) + p.quantidade);
+  }
+  return itens
+    .filter((i) => i.posicaoAjustada <= 1)
+    .map((i) => ({ ...i, vendidos: vendidos.get(i.ean) ?? vendidos.get(i.codigo) ?? 0 }))
+    .sort((a, b) => b.vendidos - a.vendidos || a.posicaoAjustada - b.posicaoAjustada || b.vendaUnitCents - a.vendaUnitCents)
+    .slice(0, limit);
+}
+
+export function retornosKpis(retornos) {
+  const porTipo = aggregate(retornos, (r) => r.tipo, (r) => r.custoTotalCents, { unidades: (items) => sum(items, (r) => r.quantidade) });
+  return {
+    custoCents: sum(retornos, (r) => r.custoTotalCents),
+    unidades: sum(retornos, (r) => r.quantidade),
+    remessas: new Set(retornos.map((r) => r.remessa)).size,
+    porTipo,
+    vencidosCents: porTipo.find((r) => /vencid/i.test(r.key))?.value ?? 0,
+    avariasCents: porTipo.find((r) => /avaria/i.test(r.key))?.value ?? 0,
+  };
+}
+
+export const retornosPorLoja = (retornos) =>
+  aggregate(retornos, (r) => r.pdx, (r) => r.custoTotalCents, { unidades: (items) => sum(items, (r) => r.quantidade) });
+
+export const retornosTopProdutos = (retornos, limit = 10) =>
+  aggregate(retornos, (r) => r.produto, (r) => r.custoTotalCents, {
+    unidades: (items) => sum(items, (r) => r.quantidade),
+    tipo: (items) => [...new Set(items.map((r) => r.tipo))].join(' / '),
+    lojas: (items) => [...new Set(items.map((r) => r.pdx))].join(', '),
+  }).slice(0, limit);
+
+export const retornosPorSemana = (retornos) =>
+  aggregate(retornos, (r) => isoWeek(r.data), (r) => r.custoTotalCents, { unidades: (items) => sum(items, (r) => r.quantidade) }).sort((a, b) => a.key.localeCompare(b.key));
+
+/** Recomendações de operação (anexadas às demais). */
+export function recomendacoesOperacao({ estoquePorLoja, retornos, retornosTop }) {
+  const out = [];
+  for (const loja of estoquePorLoja ?? []) {
+    const k = loja.kpis;
+    if (k.perdaCustoCents > 0 && (k.perdaPct >= 0.03 || k.perdaCustoCents >= 20000)) {
+      out.push({
+        tone: k.perdaPct >= 0.05 ? 'critical' : 'warning',
+        titulo: `${loja.pdx}: ${Math.round(k.perdaPct * 1000) / 10}% do estoque sumiu no inventário`,
+        valorCents: k.perdaCustoCents,
+        detalhe: `${k.perdaUnidades} unidades em ${k.skusComFalta} produtos faltaram na contagem de ${loja.data.slice(8, 10)}/${loja.data.slice(5, 7)} (acuracidade ${Math.round(k.acuracidade * 100)}%).`,
+        acao: 'Conferir câmeras nos horários de pico, checar leitura de código de barras e produtos sem registro; revisar a frequência de inventário.',
+      });
+    }
+    if (k.rupturas > 0) {
+      out.push({
+        tone: 'warning',
+        titulo: `${loja.pdx}: ${k.rupturas} produto${k.rupturas > 1 ? 's' : ''} zerado${k.rupturas > 1 ? 's' : ''} na gôndola`,
+        detalhe: `Mais ${k.estoqueBaixo} com apenas 1 unidade. Produto que falta é venda que não acontece e carrinho abandonado.`,
+        acao: 'Usar a lista "Reposição prioritária" (aba Operação) no próximo pedido ao CD.',
+      });
+    }
+  }
+  if (retornos && retornos.custoCents > 0) {
+    const top = retornosTop?.[0];
+    out.push({
+      tone: retornos.vencidosCents >= 20000 ? 'warning' : 'info',
+      titulo: `${fmtMoney(retornos.custoCents)} devolvidos ao CD por vencimento e avaria`,
+      valorCents: retornos.custoCents,
+      detalhe: `${retornos.unidades} unidades em ${retornos.remessas} remessas · vencidos ${fmtMoney(retornos.vencidosCents)}, avarias ${fmtMoney(retornos.avariasCents)}${top ? ` · maior perda: ${top.key}` : ''}.`,
+      acao: 'Reduzir o pedido dos itens que vencem sem girar e conferir a validade na reposição (PVPS: primeiro que vence, primeiro que sai).',
+    });
+  }
+  return out;
+}

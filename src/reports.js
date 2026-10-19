@@ -18,6 +18,8 @@ export const REPORT_TYPES = /** @type {const} */ ({
   transacoes: { label: 'Transações', signature: ['Code Session', 'Forma pagamento'] },
   produtos: { label: 'Produtos vendidos', signature: ['Valor total venda', 'Valor total custo'] },
   boletos: { label: 'Boletos de reabastecimento', signature: ['Vencimento', 'Picklist'] },
+  retornos: { label: 'Remessas de retorno', signature: ['Remessa de retorno', 'Custo total'] },
+  inventario: { label: 'Inventário', signature: ['Inventário', 'Posição ajustado'] },
 });
 
 /** Descobre qual relatório é pelo cabeçalho. */
@@ -40,12 +42,8 @@ export function loadReport(input) {
     throw err;
   }
   const rows = toObjects(parsed);
-  const records =
-    type === 'transacoes'
-      ? rows.map(normalizeTransacao).filter(Boolean)
-      : type === 'produtos'
-        ? rows.map(normalizeProduto).filter(Boolean)
-        : rows.map(normalizeBoleto).filter(Boolean);
+  const normalizers = { transacoes: normalizeTransacao, produtos: normalizeProduto, boletos: normalizeBoleto, retornos: normalizeRetorno, inventario: normalizeInventario };
+  const records = rows.map(normalizers[type]).filter(Boolean);
   return { type, records };
 }
 
@@ -209,14 +207,70 @@ export function normalizeBoleto(r) {
   };
 }
 
+// --- Remessas de retorno (produtos devolvidos ao CD: vencidos e avarias) ----
+
+export function normalizeRetorno(r) {
+  const dataHora = parseDateTime(r['Data']);
+  if (!dataHora) return null;
+  return {
+    pdxId: r['ID PDX'] || null,
+    pdx: r['PDX'] || '(sem loja)',
+    dataHora,
+    data: dateOnly(dataHora),
+    remessa: String(r['Remessa de retorno'] ?? '').replace(/^#/, '') || null,
+    ean: parseCode(r['Código de Barras']),
+    codigo: parseCode(r['Código']),
+    produto: r['Produto'] || '(sem nome)',
+    responsavel: r['Responsável'] || null,
+    operador: r['Operador'] || null,
+    tipo: r['Tipo'] || '(sem tipo)',
+    quantidade: parseNumber(r['Quantidade']),
+    custoUnitCents: parseMoneyCents(r['Custo unitário']),
+    custoTotalCents: parseMoneyCents(r['Custo total']),
+  };
+}
+
+// --- Inventário (contagem física × posição do sistema) ------------------------
+
+export function normalizeInventario(r) {
+  const dataHora = parseDateTime(r['Data']);
+  if (!dataHora) return null;
+  const anterior = parseNumber(r['Posição anterior']);
+  const diferenca = parseNumber(r['Diferença']);
+  const ajustado = parseNumber(r['Posição ajustado']);
+  return {
+    codigoPdx: r['Código PDX'] || null,
+    pdx: r['PDX'] || '(sem loja)',
+    dataHora,
+    data: dateOnly(dataHora),
+    inventario: String(r['Inventário'] ?? '').replace(/^#/, '') || null,
+    ean: parseCode(r['Código de Barras']),
+    codigo: parseCode(r['Código']),
+    categoria: r['Categoria'] || '(sem categoria)',
+    produto: r['Produto'] || '(sem nome)',
+    responsavel: r['Responsável'] || null,
+    operador: r['Operador'] || null,
+    custoUnitCents: parseMoneyCents(r['Custo unitário']),
+    vendaUnitCents: parseMoneyCents(r['Venda unitário']),
+    posicaoAnterior: anterior,
+    diferenca,
+    posicaoAjustada: ajustado,
+    custoDiferencaCents: parseMoneyCents(r['Custo total']),
+    vendaDiferencaCents: parseMoneyCents(r['Venda total']),
+  };
+}
+
+const MERGE_KEYS = {
+  transacoes: (t) => t.id,
+  boletos: (b) => b.id,
+  produtos: (p) => `${p.transacaoId}|${p.produtoId}|${p.vendaCents}|${p.quantidade}`,
+  retornos: (r) => `${r.remessa}|${r.ean}|${r.tipo}|${r.quantidade}`,
+  inventario: (i) => `${i.inventario}|${i.ean}|${i.codigo}`,
+};
+
 /** Une vários arquivos do mesmo tipo sem duplicar registros. */
 export function mergeRecords(type, existing, incoming) {
-  const key =
-    type === 'transacoes'
-      ? (t) => t.id
-      : type === 'boletos'
-        ? (b) => b.id
-        : (p) => `${p.transacaoId}|${p.produtoId}|${p.vendaCents}|${p.quantidade}`;
+  const key = MERGE_KEYS[type];
   const map = new Map(existing.map((r) => [key(r), r]));
   for (const r of incoming) map.set(key(r), r);
   return [...map.values()];

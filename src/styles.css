@@ -133,6 +133,25 @@ select, input[type='date'] {
 .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .btn-ghost { background: transparent; }
 
+/* --- abas ------------------------------------------------------------------- */
+.tabs-bar { background: var(--surface); border-bottom: 1px solid var(--border); }
+.tabs {
+  max-width: 1240px; margin: 0 auto; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tabs button {
+  border: 0; background: transparent; padding: 10px 12px; cursor: pointer; color: var(--ink-2); white-space: nowrap;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 6px; font-weight: 500;
+}
+.tabs button[aria-selected='true'] { color: var(--ink-1); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs button:hover { color: var(--ink-1); }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-weight: 600; }
+.badge.good { color: var(--good-ink); }
+.badge.critical { background: var(--critical); color: #fff; }
+.guide { margin: 0; padding-left: 20px; color: var(--ink-2); display: grid; gap: 4px; }
+.guide b { color: var(--ink-1); }
+
 /* --- importação ------------------------------------------------------------ */
 .page { padding-block: 18px 40px; display: grid; gap: 22px; }
 .page > section { min-width: 0; }

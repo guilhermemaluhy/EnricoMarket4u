@@ -15,11 +15,25 @@ const PRESETS = [
   { id: 'custom', label: 'Personalizado', days: undefined },
 ];
 
+const EMPTY = () => ({ transacoes: [], produtos: [], boletos: [], retornos: [], inventario: [] });
+
+const TABS = [
+  { id: 'visao', label: 'Visão geral' },
+  { id: 'financeiro', label: 'Financeiro' },
+  { id: 'vendas', label: 'Vendas' },
+  { id: 'produtos', label: 'Produtos' },
+  { id: 'operacao', label: 'Operação' },
+  { id: 'lojas', label: 'Lojas' },
+  { id: 'clientes', label: 'Clientes' },
+  { id: 'dados', label: 'Dados' },
+];
+
 const state = {
-  data: { transacoes: [], produtos: [], boletos: [] },
-  sources: { transacoes: [], produtos: [], boletos: [] },
+  data: EMPTY(),
+  sources: EMPTY(),
   sample: false,
   filter: { preset: 'tudo', from: null, to: null, pdxId: '' },
+  tab: 'visao',
   hoje: todayLocal(),
   notice: null,
 };
@@ -27,7 +41,7 @@ const state = {
 // --- persistência --------------------------------------------------------------
 function save() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ data: state.data, sources: state.sources, sample: state.sample, filter: state.filter }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ data: state.data, sources: state.sources, sample: state.sample, filter: state.filter, tab: state.tab }));
   } catch {
     /* armazenamento indisponível: segue só em memória */
   }
@@ -38,10 +52,11 @@ function restore() {
     if (!raw) return false;
     const saved = JSON.parse(raw);
     if (!saved?.data) return false;
-    state.data = { ...state.data, ...saved.data };
-    state.sources = { ...state.sources, ...(saved.sources ?? {}) };
+    state.data = { ...EMPTY(), ...saved.data };
+    state.sources = { ...EMPTY(), ...(saved.sources ?? {}) };
     state.sample = Boolean(saved.sample);
     state.filter = { ...state.filter, ...(saved.filter ?? {}) };
+    if (saved.tab && TABS.some((t) => t.id === saved.tab)) state.tab = saved.tab;
     return hasData();
   } catch {
     return false;
@@ -53,8 +68,8 @@ const hasData = () => Object.values(state.data).some((l) => l.length > 0);
 export function ingest(name, bytesOrText) {
   const { type, records } = loadReport(bytesOrText);
   if (state.sample) {
-    state.data = { transacoes: [], produtos: [], boletos: [] };
-    state.sources = { transacoes: [], produtos: [], boletos: [] };
+    state.data = EMPTY();
+    state.sources = EMPTY();
     state.sample = false;
   }
   state.data[type] = mergeRecords(type, state.data[type], records);
@@ -73,7 +88,10 @@ async function ingestFiles(files) {
       errors.push(`${file.name}: ${err.message}`);
     }
   }
-  if (ok.length) state.filter.preset = 'tudo';
+  if (ok.length) {
+    state.filter.preset = 'tudo';
+    state.tab = 'visao';
+  }
   state.notice = errors.length
     ? { tone: 'error', text: `Não consegui ler ${errors.length === 1 ? 'um arquivo' : `${errors.length} arquivos`}. ${errors.join(' · ')}` }
     : ok.length
@@ -106,16 +124,24 @@ function currentRange() {
 function filtered() {
   const range = currentRange();
   const pdxId = state.filter.pdxId || null;
+  const pdxNome = pdxId ? M.listPdx(state.data.transacoes, state.data.produtos).find((l) => l.id === pdxId)?.nome : null;
   return {
     range,
+    pdxId,
+    pdxNome,
     transacoes: M.filterTransacoes(state.data.transacoes, { ...range, pdxId }),
     produtos: M.filterProdutos(state.data.produtos, { ...range, pdxId }),
     boletos: M.filterBoletos(state.data.boletos, range),
+    retornos: M.filterRetornos(state.data.retornos, { ...range, pdxId }),
+    // posição de estoque é uma foto: usa o último inventário de cada loja, sem filtro de período
+    inventario: M.filterInventario(state.data.inventario, { pdxId, pdxNome }, M.mapaCodigoPdx(state.data.produtos)),
   };
 }
 
 function storeColors() {
   const lojas = M.listPdx(state.data.transacoes, state.data.produtos);
+  for (const r of [...state.data.retornos, ...state.data.inventario]) if (!lojas.some((l) => l.nome === r.pdx)) lojas.push({ id: r.pdxId ?? r.codigoPdx, nome: r.pdx });
+  lojas.sort((a, b) => a.nome.localeCompare(b.nome));
   const map = new Map();
   lojas.forEach((l, i) => map.set(l.nome, SERIES[Math.min(i, SERIES.length - 1)]));
   return (row) => map.get(row.key) ?? 'var(--series-1)';
@@ -161,14 +187,21 @@ function sectionImport() {
     .join('');
   const notice = state.notice ? `<p class="notice ${state.notice.tone === 'error' ? 'error' : ''}">${esc(state.notice.text)}</p>` : '';
   const sample = state.sample ? `<p class="notice">Mostrando <b>dados de exemplo</b> (um dia de operação). Importe seus relatórios para substituir.</p>` : '';
+  const guia = `<div class="card"><div class="card-head"><h3>Como exportar do painel Market4u</h3></div><ol class="guide">
+    <li><b>Transações</b> — Clientes › Transações › exportar CSV. Alimenta Vendas, Lojas, Clientes e a média diária do caixa.</li>
+    <li><b>Produtos vendidos</b> — Relatórios › Produtos vendidos. Alimenta Produtos (margem) e cruza com o inventário.</li>
+    <li><b>Boletos de reabastecimento</b> — Vendas de mercadorias do CD › Boletos. Alimenta Financeiro.</li>
+    <li><b>Inventário</b> — Sistema PDV › Inventário. Posição de estoque, perdas e rupturas por loja.</li>
+    <li><b>Remessas de retorno</b> — Sistema PDV › Retorno PDV. Produtos vencidos e avariados devolvidos ao CD.</li>
+  </ol><p class="kicker">Exporte sempre o maior período possível: com 30 dias de transações a média diária, a tendência e a comparação com o período anterior ficam confiáveis.</p></div>`;
   return `<section>
     <div class="dropzone" id="dropzone">
       <p><b>Arraste os CSV exportados do painel Market4u</b> ou <label class="btn" for="file-input" style="cursor:pointer">escolher arquivos</label>
       <input id="file-input" type="file" accept=".csv,text/csv" multiple class="sr-only"></p>
-      <span class="hint">Transações · Produtos vendidos · Boletos de reabastecimento. Reimportar o mesmo período não duplica registros.</span>
+      <span class="hint">Transações · Produtos vendidos · Boletos · Inventário · Remessas de retorno. O tipo é reconhecido pelo cabeçalho; reimportar o mesmo período não duplica registros.</span>
       <div class="sources">${chips}</div>
       ${hasData() ? `<button type="button" class="btn btn-ghost" id="clear-data">Limpar dados</button>` : ''}
-    </div>${sample}${notice}
+    </div>${sample}${notice}${guia}
   </section>`;
 }
 
@@ -227,12 +260,25 @@ function sectionDecisao(f) {
   const diasComDados = temT ? new Set(f.transacoes.filter((t) => t.compra).map((t) => t.data)).size : 0;
   const caixa = b ? M.fluxoCaixa(b.comSituacao, media, state.hoje, 14) : null;
   const revisar = M.produtosParaRevisar(f.produtos, 0.3);
+  const estoqueLojas = M.ultimoInventarioPorLoja(f.inventario).map((l) => ({ ...l, kpis: M.estoqueKpis(l.itens) }));
   const recs = M.recomendacoes({
     vendas, lojas, boletos: b, caixa, revisar,
     fiscal: vendas ? { semNfce: vendas.compras - vendas.nfceEmitidas } : null,
     abandonosCategoria: temT ? M.abandonosPorCategoria(f.transacoes) : [],
     diasComDados,
-  });
+  }).concat(
+    M.recomendacoesOperacao({
+      estoquePorLoja: estoqueLojas,
+      retornos: f.retornos.length ? M.retornosKpis(f.retornos) : null,
+      retornosTop: M.retornosTopProdutos(f.retornos, 1),
+    }),
+  );
+  const ordem = { critical: 0, warning: 1, info: 2, good: 3 };
+  recs.sort((a, b) => ordem[a.tone] - ordem[b.tone]);
+  if (recs.length > 1) {
+    const i = recs.findIndex((r) => r.tone === 'good');
+    if (i >= 0) recs.splice(i, 1);
+  }
   const lista = recs.length
     ? `<ul class="actions">${recs.map((r) => `<li class="action ${r.tone}"><span class="stripe"></span><div><div class="title">${esc(r.titulo)}</div><div class="detail">${esc(r.detalhe)}</div><div class="todo"><b>O que fazer:</b> ${esc(r.acao)}</div></div>${r.valorCents != null ? `<div class="amount">${esc(money(r.valorCents))}</div>` : '<span></span>'}</li>`).join('')}</ul>`
     : `<p class="empty">Nada a recomendar com os dados carregados.</p>`;
@@ -265,7 +311,114 @@ function sectionDecisao(f) {
       span: true,
     });
   }
-  return `<section><h2>O que fazer <span class="scope">prioridades calculadas a partir dos relatórios · ${esc(scopeLabel(f.range))}</span></h2>${lista}${caixaHtml ? `<div class="grid" style="margin-top:12px">${caixaHtml}</div>` : ''}</section>`;
+  return { acoes: `<section><h2>O que fazer <span class="scope">prioridades calculadas a partir dos relatórios · ${esc(scopeLabel(f.range))}</span></h2>${lista}</section>`, caixa: caixaHtml ? `<section><h2>Caixa <span class="scope">boletos abertos × receita projetada</span></h2><div class="grid">${caixaHtml}</div></section>` : '' };
+}
+
+function sectionOperacao(f) {
+  const temI = state.data.inventario.length > 0;
+  const temR = state.data.retornos.length > 0;
+  if (!temI && !temR) return `<section><p class="empty">Importe o <b>inventário</b> e as <b>remessas de retorno</b> (Sistema PDV) na aba Dados para ver estoque, perdas e devoluções.</p></section>`;
+  const colorLoja = storeColors();
+  let html = '';
+  if (temI) {
+    const lojas = M.ultimoInventarioPorLoja(f.inventario);
+    const itens = lojas.flatMap((l) => l.itens);
+    const k = M.estoqueKpis(itens);
+    const tiles = [
+      tile('Estoque a custo', money(k.custoCents), `${number(k.unidades)} unidades em ${number(k.skus)} SKUs · ${money(k.vendaCents)} a preço de venda`),
+      tile('Perda no inventário', money(k.perdaCustoCents), `${number(k.perdaUnidades)} unidades em ${number(k.skusComFalta)} produtos · ${percent(k.perdaPct)} do estoque · ${money(k.perdaVendaCents)} em venda perdida`, k.perdaPct >= 0.05 ? 'critical' : k.perdaCustoCents ? 'warning' : 'good'),
+      tile('Acuracidade', percent(k.acuracidade), `itens contados iguais ao sistema · sobras ${number(k.sobraUnidades)} un (${money(k.sobraCustoCents)})`, k.acuracidade < 0.8 ? 'warning' : 'good'),
+      tile('Rupturas', number(k.rupturas), `produtos zerados · mais ${number(k.estoqueBaixo)} com 1 unidade`, k.rupturas ? 'warning' : 'good'),
+    ];
+    const invDesc = lojas.map((l) => `${l.pdx}: inventário #${l.inventario} de ${longDate(l.data)}`).join(' · ');
+    const perdasCat = M.perdasPorCategoria(itens);
+    const perdasTop = M.perdasTopProdutos(itens, 10);
+    const estCat = M.estoquePorCategoria(itens);
+    const rep = M.reposicaoPrioritaria(itens, f.produtos, 20);
+    const cards = [
+      card({
+        title: 'Perdas por categoria', desc: 'custo do que faltou na contagem',
+        chart: hbar(perdasCat, { fmt: money, labelW: 180, color: () => 'var(--critical)', sub: (r) => `· ${number(r.unidades)} un` }),
+        tableHtml: table([{ label: 'Categoria', get: (r) => r.key }, { label: 'Perda (custo)', num: true, get: (r) => money(r.value) }, { label: 'Unid.', num: true, get: (r) => number(r.unidades) }, { label: 'Produtos', num: true, get: (r) => number(r.count) }], perdasCat),
+      }),
+      card({
+        title: 'Estoque por categoria', desc: 'valor a custo · onde o dinheiro está parado',
+        chart: hbar(estCat, { fmt: money, labelW: 180, sub: (r) => `· ${number(r.unidades)} un · ${r.rupturas} zerados` }),
+        tableHtml: table([{ label: 'Categoria', get: (r) => r.key }, { label: 'Custo', num: true, get: (r) => money(r.value) }, { label: 'Unid.', num: true, get: (r) => number(r.unidades) }, { label: 'SKUs', num: true, get: (r) => number(r.skus) }, { label: 'Zerados', num: true, get: (r) => number(r.rupturas) }], estCat),
+      }),
+    ];
+    const perdasHtml = table(
+      [
+        { label: '#', html: true, get: (r) => `<span class="rank">${perdasTop.indexOf(r) + 1}</span>` },
+        { label: 'Produto', get: (r) => r.key },
+        { label: 'Categoria', get: (r) => r.categoria },
+        { label: 'Loja', get: (r) => r.loja },
+        { label: 'Faltaram', num: true, get: (r) => `${number(r.unidades)} un` },
+        { label: 'Perda (custo)', num: true, get: (r) => money(r.value) },
+      ],
+      perdasTop,
+    );
+    const repHtml = rep.length
+      ? table(
+          [
+            { label: 'Produto', get: (r) => r.produto },
+            { label: 'Categoria', get: (r) => r.categoria },
+            { label: 'Loja', get: (r) => r.pdx },
+            { label: 'Em estoque', num: true, html: true, get: (r) => `<span class="${r.posicaoAjustada <= 0 ? 'neg' : ''}">${number(r.posicaoAjustada)}</span>` },
+            { label: 'Vendidos no período', num: true, get: (r) => number(r.vendidos) },
+            { label: 'Preço', num: true, get: (r) => money(r.vendaUnitCents) },
+            { label: 'Custo', num: true, get: (r) => money(r.custoUnitCents) },
+          ],
+          rep,
+        )
+      : `<p class="empty">Nenhum produto zerado ou com 1 unidade.</p>`;
+    html += `<section><h2>Estoque <span class="scope">${esc(invDesc)} · foto do último inventário, sem filtro de período</span></h2>
+      <div class="tiles" style="margin-bottom:12px">${tiles.join('')}</div>
+      <div class="grid">${cards.join('')}
+        <div class="card span-2"><div class="card-head"><h3>Maiores perdas no inventário</h3><span class="desc">produtos que mais faltaram na contagem · candidatos a furto, quebra ou erro de registro</span></div>${perdasHtml}</div>
+        <div class="card span-2"><div class="card-head"><h3>Reposição prioritária</h3><span class="desc">zerados ou com 1 unidade, primeiro os que mais venderam no período</span></div>${repHtml}</div>
+      </div></section>`;
+  }
+  if (temR) {
+    const k = M.retornosKpis(f.retornos);
+    const porLoja = M.retornosPorLoja(f.retornos);
+    const semanas = M.retornosPorSemana(f.retornos);
+    const top = M.retornosTopProdutos(f.retornos, 10);
+    const tipoColors = ['var(--series-2)', 'var(--series-7)', 'var(--series-4)'];
+    const tiles = [
+      tile('Devolvido ao CD', money(k.custoCents), `${number(k.unidades)} unidades em ${number(k.remessas)} remessas`, k.custoCents ? 'warning' : 'good'),
+      tile('Vencidos', money(k.vencidosCents), 'produtos que passaram da validade na gôndola', k.vencidosCents ? 'warning' : ''),
+      tile('Avarias', money(k.avariasCents), 'embalagem danificada ou produto impróprio'),
+    ];
+    const cards = [
+      card({
+        title: 'Devoluções por loja', desc: 'custo dos produtos devolvidos',
+        chart: hbar(porLoja, { fmt: money, labelW: 190, color: colorLoja, sub: (r) => `· ${number(r.unidades)} un` }),
+        tableHtml: table([{ label: 'Loja', get: (r) => r.key }, { label: 'Custo', num: true, get: (r) => money(r.value) }, { label: 'Unid.', num: true, get: (r) => number(r.unidades) }], porLoja),
+      }),
+      card({
+        title: 'Devoluções por semana', desc: 'vencidos + avarias',
+        chart: columns(semanas, { fmt: money0, labelFn: (k2) => k2.replace('-S', ' s'), tipLines: (r) => [money(r.value), `${number(r.unidades)} unidades`] }) + stacked(k.porTipo, { fmt: money, colors: tipoColors }),
+        legendHtml: legend(k.porTipo.map((r, i) => ({ label: `${r.key} · ${money(r.value)} · ${number(r.unidades)} un`, color: tipoColors[i % tipoColors.length] }))),
+        tableHtml: table([{ label: 'Semana', get: (r) => r.key.replace('-S', ' · sem. ') }, { label: 'Custo', num: true, get: (r) => money(r.value) }, { label: 'Unid.', num: true, get: (r) => number(r.unidades) }], semanas),
+      }),
+    ];
+    const topHtml = table(
+      [
+        { label: '#', html: true, get: (r) => `<span class="rank">${top.indexOf(r) + 1}</span>` },
+        { label: 'Produto', get: (r) => r.key },
+        { label: 'Motivo', get: (r) => r.tipo },
+        { label: 'Lojas', get: (r) => r.lojas },
+        { label: 'Unid.', num: true, get: (r) => number(r.unidades) },
+        { label: 'Custo', num: true, get: (r) => money(r.value) },
+      ],
+      top,
+    );
+    html += `<section><h2>Devoluções ao CD <span class="scope">remessas de retorno · ${esc(scopeLabel(f.range))}</span></h2>
+      <div class="tiles" style="margin-bottom:12px">${tiles.join('')}</div>
+      <div class="grid">${cards.join('')}<div class="card span-2"><div class="card-head"><h3>Produtos mais devolvidos</h3><span class="desc">reduzir o pedido destes itens ou girar melhor a validade</span></div>${topHtml}</div></div></section>`;
+  }
+  return html;
 }
 
 function sectionLojas(f) {
@@ -542,17 +695,45 @@ function renderFilters() {
 }
 
 // --- render ----------------------------------------------------------------------
+function renderTabs() {
+  const loaded = Object.values(state.data).filter((l) => l.length > 0).length;
+  const total = Object.keys(REPORT_TYPES).length;
+  const b = state.data.boletos.length ? M.boletosKpis(state.data.boletos, state.hoje) : null;
+  const badge = (id) => {
+    if (id === 'dados') return `<span class="badge ${loaded === total ? 'good' : ''}">${loaded}/${total}</span>`;
+    if (id === 'financeiro' && b?.vencidos) return `<span class="badge critical">${b.vencidos}</span>`;
+    return '';
+  };
+  document.getElementById('tabs').innerHTML = TABS.map((t) => `<button type="button" role="tab" data-tab="${t.id}" aria-selected="${state.tab === t.id}">${t.label}${badge(t.id)}</button>`).join('');
+  document.querySelector('[data-tab][aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+}
+
 export function render() {
   cardSeq = 0;
+  if (!hasData()) state.tab = 'dados';
   renderFilters();
+  renderTabs();
   const main = document.getElementById('main');
   if (!hasData()) {
-    main.innerHTML = sectionImport() + `<section><p class="empty">Nenhum relatório carregado ainda. Exporte do painel Market4u os relatórios de transações, produtos vendidos e boletos e arraste aqui.</p></section>`;
+    main.innerHTML = sectionImport() + `<section><p class="empty">Nenhum relatório carregado ainda. Exporte do painel Market4u os relatórios e arraste aqui.</p></section>`;
     bind();
     return;
   }
   const f = filtered();
-  main.innerHTML = [sectionImport(), sectionOverview(f), sectionDecisao(f), sectionLojas(f), sectionVendas(f), sectionProdutos(f), sectionClientes(f), sectionBoletos(f), sectionReposicao(f), sectionTransacoes(f)].join('');
+  const content = {
+    visao: () => { const d = sectionDecisao(f); return sectionOverview(f) + d.acoes; },
+    financeiro: () => {
+      const d = sectionDecisao(f);
+      return state.data.boletos.length ? d.caixa + sectionBoletos(f) + sectionReposicao(f) : `<section><p class="empty">Importe os <b>boletos de reabastecimento</b> na aba Dados para ver caixa, vencimentos e reposição × vendas.</p></section>`;
+    },
+    vendas: () => (state.data.transacoes.length ? sectionVendas(f) + sectionTransacoes(f) : `<section><p class="empty">Importe o relatório de <b>transações</b> na aba Dados.</p></section>`),
+    produtos: () => (state.data.produtos.length ? sectionProdutos(f) : `<section><p class="empty">Importe o relatório de <b>produtos vendidos</b> na aba Dados.</p></section>`),
+    operacao: () => sectionOperacao(f),
+    lojas: () => (state.data.transacoes.length ? sectionLojas(f) : `<section><p class="empty">Importe o relatório de <b>transações</b> na aba Dados.</p></section>`),
+    clientes: () => (state.data.transacoes.length ? sectionClientes(f) : `<section><p class="empty">Importe o relatório de <b>transações</b> na aba Dados.</p></section>`),
+    dados: () => sectionImport(),
+  };
+  main.innerHTML = (content[state.tab] ?? content.visao)();
   bind();
 }
 
@@ -566,13 +747,22 @@ function bind() {
     dz.addEventListener('drop', (e) => { e.preventDefault(); dz.classList.remove('over'); ingestFiles([...e.dataTransfer.files]); });
   }
   document.getElementById('clear-data')?.addEventListener('click', () => {
-    state.data = { transacoes: [], produtos: [], boletos: [] };
-    state.sources = { transacoes: [], produtos: [], boletos: [] };
+    state.data = EMPTY();
+    state.sources = EMPTY();
     state.sample = false;
     state.notice = null;
     save();
     render();
   });
+  for (const btn of document.querySelectorAll('[data-tab]')) {
+    btn.addEventListener('click', () => {
+      state.tab = btn.dataset.tab;
+      try { history.replaceState(null, '', `#${state.tab}`); } catch { /* sem histórico */ }
+      save();
+      render();
+      window.scrollTo({ top: 0 });
+    });
+  }
   for (const btn of document.querySelectorAll('[data-preset]')) {
     btn.addEventListener('click', () => { state.filter.preset = btn.dataset.preset; save(); render(); });
   }
@@ -615,6 +805,8 @@ function setupTooltip() {
 
 export async function start() {
   setupTooltip();
+  const hash = (location.hash || '').replace('#', '');
+  if (TABS.some((t) => t.id === hash)) state.tab = hash;
   let lastWide = wideChartWidth();
   let timer;
   window.addEventListener('resize', () => {

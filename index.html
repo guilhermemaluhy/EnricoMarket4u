@@ -12,6 +12,7 @@
   <div class="brand"><h1>Speed Shop Market</h1><span class="sub">Minimercados autônomos · relatórios Market4u</span></div>
   <div class="filters" id="filters"></div>
 </div></header>
+<nav class="tabs-bar"><div class="tabs" id="tabs" role="tablist"></div></nav>
 <main class="page" id="main"></main>
 <footer class="page">Os dados ficam só neste navegador (armazenamento local). Situação dos boletos calculada pela data de hoje.</footer>
 <div class="tooltip" id="tooltip" hidden></div>
@@ -19,7 +20,7 @@
   import { start } from './src/app.js';
   // Em desenvolvimento, carrega as amostras anonimizadas quando não há dados salvos.
   try {
-    const names = { transacoes: 'transacoes.csv', produtos: 'produtos.csv', boletos: 'boletos.csv' };
+    const names = { transacoes: 'transacoes.csv', produtos: 'produtos.csv', boletos: 'boletos.csv', retornos: 'retornos.csv', inventario: 'inventario.csv' };
     const entries = await Promise.all(Object.entries(names).map(async ([k, f]) => {
       const res = await fetch(`data/sample/${f}`);
       if (!res.ok) throw new Error(f);
