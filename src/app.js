@@ -1,5 +1,5 @@
 // Estado, importação dos relatórios e renderização do dashboard (por abas).
-import { loadReport, mergeRecords, REPORT_TYPES, SITUACOES, EVENTOS } from './reports.js';
+import { loadReport, mergeRecords, REPORT_TYPES, SITUACOES, EVENTOS, classifyEvento } from './reports.js';
 import * as M from './metrics.js';
 import { hbar, columns, stacked, legend, table, heatmap, emptyChart } from './charts.js';
 import { money, moneyShort, number, percent, shortDate, longDate, dateTime, weekday, hourLabel, days, escapeHtml as esc } from './format.js';
@@ -67,8 +67,11 @@ function restore() {
     state.feito = saved.feito ?? {};
     state.verificado = saved.verificado ?? {};
     if (saved.tab && TABS.some((t) => t.id === saved.tab)) state.tab = saved.tab;
-    // dados antigos sem os campos novos: reclassifica a partir do evento
-    for (const t of state.data.transacoes) if (!t.tipoEvento) Object.assign(t, { tipoEvento: t.compra ? 'compra' : 'carrinho', cobranca: false });
+    // dados guardados por uma versão anterior: reclassifica o evento com a regra atual
+    for (const t of state.data.transacoes) {
+      const tipoEvento = classifyEvento(t.evento);
+      Object.assign(t, { tipoEvento, compra: tipoEvento === 'compra', cobranca: tipoEvento === 'cobranca_pendente' || tipoEvento === 'cobranca_paga' });
+    }
     return hasData();
   } catch {
     return false;
