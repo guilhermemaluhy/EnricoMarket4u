@@ -44,3 +44,23 @@ export function escapeHtml(s) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
 }
+
+const SMALL = new Set(['de', 'da', 'do', 'das', 'dos', 'e']);
+/** "CONDOMINIO URBAN VILA MARIANA" → "Condominio Urban Vila Mariana"; siglas de até 3 letras ficam ("ID LISBOA" → "ID Lisboa"). */
+export function storeName(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return s;
+  if (s !== s.toUpperCase()) return s; // já em caixa mista: respeita
+  return s
+    .split(/\s+/)
+    .map((w, i) => {
+      if (/^[A-Z]{1,3}\d*$/.test(w)) return w;
+      const lower = w.toLowerCase();
+      if (i > 0 && SMALL.has(lower)) return lower;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ');
+}
+
+/** Junta dias e texto: 3 → "3 dias", 1 → "1 dia". */
+export const days = (n) => `${number(n)} dia${Math.abs(n) === 1 ? '' : 's'}`;

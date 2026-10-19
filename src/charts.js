@@ -1,10 +1,12 @@
 // Gráficos em SVG gerados como string. Sem biblioteca: barras horizontais,
 // colunas (hora/dia) e uma barra empilhada 100%. Cada gráfico tem uma tabela gêmea.
+// `width` é a largura real do container (px): o SVG não escala texto, só o traçado.
 import { escapeHtml as esc } from './format.js';
 
 const FONT = 11;
+const CHAR = 6.4; // largura média de um caractere a 11px
 
-function niceMax(max) {
+export function niceMax(max) {
   if (max <= 0) return 1;
   const exp = 10 ** Math.floor(Math.log10(max));
   const f = max / exp;
@@ -12,41 +14,58 @@ function niceMax(max) {
   return nice * exp;
 }
 
-function ticks(max, n = 4) {
-  const top = niceMax(max);
-  return Array.from({ length: n + 1 }, (_, i) => (top * i) / n);
+/** Passo 1-2-5 para o eixo: ticks redondos, topo logo acima do máximo. */
+function niceStep(raw) {
+  const e = 10 ** Math.floor(Math.log10(raw));
+  const f = raw / e;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * e;
+}
+
+export function ticks(max, n = 4) {
+  if (max <= 0) return [0, 1];
+  const step = niceStep(max / n);
+  const top = Math.ceil(max / step) * step;
+  return Array.from({ length: Math.round(top / step) + 1 }, (_, i) => i * step);
 }
 
 function tip(label, lines) {
-  return `data-tip="${esc(JSON.stringify({ label, lines }))}"`;
+  return `data-tip="${esc(JSON.stringify({ label, lines: lines.filter(Boolean) }))}"`;
 }
+
+const truncate = (s, n) => (String(s).length > n ? `${String(s).slice(0, Math.max(1, n - 1))}…` : String(s));
 
 /**
  * Barras horizontais. rows: [{ key, value, ...}], fmt: valor → texto.
- * opts.color(row) devolve um token CSS (ex.: 'var(--series-1)').
+ * opts.color(row) devolve um token CSS (ex.: 'var(--series-1)'). opts.sub(row) é o complemento
+ * cinza depois do valor; abaixo de 420px ele vai só para o tooltip e o rótulo fica acima da barra.
  */
-export function hbar(rows, { fmt, color = () => 'var(--series-1)', sub, labelW = 150, maxLabel, tipLines } = {}) {
+export function hbar(rows, { fmt, color = () => 'var(--series-1)', sub, labelW = 150, maxLabel, tipLines, width = 560 } = {}) {
   if (rows.length === 0) return emptyChart();
-  maxLabel ??= Math.floor((labelW - 10) / 7); // ~7px por caractere (maiúsculas) a 11px
-  const rowH = 28;
+  const compact = width < 420;
+  labelW = compact ? 0 : Math.min(labelW, Math.round(width * 0.36));
+  maxLabel ??= compact ? Math.floor((width - 10) / CHAR) : Math.floor((labelW - 10) / 7);
+  const rowH = compact ? 40 : 28;
   const padTop = 6;
-  const width = 560;
   const max = niceMax(Math.max(...rows.map((r) => r.value)));
-  // reserva à direita o espaço do maior rótulo de valor (+ complemento), para a barra cheia não cortar o texto
-  const longest = Math.max(...rows.map((r) => `${fmt(r.value)}${sub ? ` ${sub(r)}` : ''}`.length));
-  const valueW = Math.min(width - labelW - 120, Math.max(70, 6 + longest * 6.2));
+  const valueText = (r) => (compact || !sub ? fmt(r.value) : `${fmt(r.value)} ${sub(r)}`);
+  const longest = Math.max(...rows.map((r) => valueText(r).length));
+  const valueW = Math.min(width - labelW - 80, Math.max(60, 6 + longest * CHAR));
   const plotW = width - labelW - valueW;
   const height = padTop + rows.length * rowH + 8;
-  let out = `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Gráfico de barras">`;
+  let out = `<svg class="chart" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Gráfico de barras">`;
   rows.forEach((r, i) => {
     const y = padTop + i * rowH;
     const w = Math.max(0, (r.value / max) * plotW);
-    const label = String(r.key).length > maxLabel ? String(r.key).slice(0, maxLabel - 1) + '…' : String(r.key);
-    out += `<g class="hit" tabindex="0" ${tip(r.key, tipLines ? tipLines(r) : [fmt(r.value)])}>`;
+    const barY = compact ? y + 20 : y + 6;
+    const lines = tipLines ? tipLines(r) : [fmt(r.value), sub ? sub(r).replace(/^·\s*/, '') : ''];
+    out += `<g class="hit" tabindex="0" ${tip(r.key, lines)}>`;
     out += `<rect x="0" y="${y}" width="${width}" height="${rowH}" fill="transparent"/>`;
-    out += `<text x="${labelW - 8}" y="${y + 17}" text-anchor="end" font-size="${FONT}" fill="var(--ink-2)">${esc(label)}</text>`;
-    out += `<rect x="${labelW}" y="${y + 6}" width="${w.toFixed(1)}" height="16" rx="3" fill="${color(r)}"/>`;
-    out += `<text x="${labelW + w + 6}" y="${y + 17}" font-size="${FONT}" fill="var(--ink-1)" class="num">${esc(fmt(r.value))}${sub ? `<tspan fill="var(--ink-3)"> ${esc(sub(r))}</tspan>` : ''}</text>`;
+    if (compact) out += `<text x="0" y="${y + 13}" font-size="${FONT}" fill="var(--ink-2)">${esc(truncate(r.key, maxLabel))}</text>`;
+    else out += `<text x="${labelW - 8}" y="${y + 17}" text-anchor="end" font-size="${FONT}" fill="var(--ink-2)">${esc(truncate(r.key, maxLabel))}</text>`;
+    if (w > 0) out += `<rect x="${labelW}" y="${barY}" width="${w.toFixed(1)}" height="16" rx="3" fill="${color(r)}"/>`;
+    else out += `<rect x="${labelW}" y="${barY + 7}" width="2" height="2" fill="var(--axis)"/>`;
+    const vx = labelW + w + 6;
+    out += `<text x="${vx.toFixed(1)}" y="${barY + 11}" font-size="${FONT}" fill="var(--ink-1)" class="num">${esc(fmt(r.value))}${!compact && sub ? `<tspan fill="var(--ink-2)"> ${esc(sub(r))}</tspan>` : ''}</text>`;
     out += `</g>`;
   });
   out += `<line x1="${labelW}" y1="${padTop}" x2="${labelW}" y2="${height - 8}" stroke="var(--axis)" stroke-width="1"/>`;
@@ -55,23 +74,25 @@ export function hbar(rows, { fmt, color = () => 'var(--series-1)', sub, labelW =
 }
 
 /**
- * Colunas verticais com eixo. rows: [{ key, value, count? }], labelFn(key, i) → rótulo do eixo.
+ * Colunas verticais com eixo. rows: [{ key, value, count? }], labelFn(key, i, full) → rótulo do eixo.
+ * opts.max força o topo da escala (para dois gráficos comparáveis).
  */
-export function columns(rows, { fmt, labelFn = (k) => String(k), color = () => 'var(--series-1)', every = 1, tipLines, highlight, width = 560 } = {}) {
+export function columns(rows, { fmt, labelFn = (k) => String(k), color = () => 'var(--series-1)', every = 1, tipLines, highlight, width = 560, max: forcedMax, height } = {}) {
   if (rows.length === 0) return emptyChart();
-  const height = width > 700 ? 260 : 220;
+  height ??= width > 700 ? 260 : 220;
   const padL = 56;
   const padR = 12;
   const padT = 12;
   const padB = 28;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
-  const max = Math.max(...rows.map((r) => r.value));
+  const max = forcedMax ?? Math.max(...rows.map((r) => r.value));
   const tk = ticks(max);
   const top = tk[tk.length - 1];
   const slot = plotW / rows.length;
   const barW = Math.max(3, Math.min(28, slot - 2));
-  let out = `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Gráfico de colunas">`;
+  every = Math.max(every, Math.ceil(rows.length / Math.max(2, Math.floor(plotW / 46))));
+  let out = `<svg class="chart" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Gráfico de colunas">`;
   for (const t of tk) {
     const y = padT + plotH - (t / top) * plotH;
     out += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${width - padR}" y2="${y.toFixed(1)}" stroke="${t === 0 ? 'var(--axis)' : 'var(--grid)'}" stroke-width="1"/>`;
@@ -93,21 +114,24 @@ export function columns(rows, { fmt, labelFn = (k) => String(k), color = () => '
 }
 
 /** Barra empilhada 100% para uma composição (via, sexo...). rows: [{key, value}]. */
-export function stacked(rows, { fmt, colors }) {
+export function stacked(rows, { fmt, colors, width = 560 }) {
   const total = rows.reduce((a, r) => a + r.value, 0);
   if (!total) return emptyChart();
-  const width = 560;
-  const h = 22;
+  const compact = width < 420;
+  const h = compact ? 26 : 22;
   let x = 0;
-  let out = `<svg class="chart chart-stacked" viewBox="0 0 ${width} ${h + 30}" role="img" aria-label="Composição">`;
+  let out = `<svg class="chart chart-stacked" viewBox="0 0 ${width} ${h + 4}" width="${width}" height="${h + 4}" role="img" aria-label="Composição">`;
   rows.forEach((r, i) => {
     const w = (r.value / total) * width;
-    out += `<g class="hit" tabindex="0" ${tip(r.key, [fmt(r.value), `${Math.round((r.value / total) * 100)}% do total`])}>`;
+    const pct = Math.round((r.value / total) * 100);
+    const label = `${r.key} ${pct}%`;
+    out += `<g class="hit" tabindex="0" ${tip(r.key, [fmt(r.value), `${pct}% do total`])}>`;
     out += `<rect x="${x.toFixed(1)}" y="0" width="${Math.max(0, w - 2).toFixed(1)}" height="${h}" rx="3" fill="${colors[i % colors.length]}"/>`;
-    if (w > 70) out += `<text x="${(x + 8).toFixed(1)}" y="15" font-size="${FONT}" fill="#fff" font-weight="600">${esc(r.key)} ${Math.round((r.value / total) * 100)}%</text>`;
+    if (!compact && w > label.length * 6.6 + 16) out += `<text x="${(x + 8).toFixed(1)}" y="15" font-size="${FONT}" class="stack-label">${esc(label)}</text>`;
     x += w;
+    out += `</g>`;
   });
-  out += `</g></svg>`;
+  out += `</svg>`;
   return out;
 }
 
@@ -117,16 +141,18 @@ export function legend(items) {
     .join('')}</ul>`;
 }
 
-export function table(columns, rows) {
-  const head = columns.map((c) => `<th class="${c.num ? 'num' : ''}">${esc(c.label)}</th>`).join('');
+/**
+ * Tabela. columns: [{ label, get, num?, html?, title?, mobile?: false, hideIfUniform?: true }].
+ * `mobile: false` esconde a coluna em telas estreitas; `hideIfUniform` omite a coluna quando todos os valores são iguais.
+ */
+export function table(columns, rows, { rowAttrs } = {}) {
+  const visible = columns.filter((c) => !(c.hideIfUniform && rows.length > 1 && new Set(rows.map((r) => c.get(r))).size === 1));
+  const attrs = (c) => `${c.num ? ' class="num"' : ''}${c.mobile === false ? ' data-opt=""' : ''}`;
+  const head = visible.map((c) => `<th${attrs(c)}${c.title ? ` title="${esc(c.title)}"` : ''}>${esc(c.label)}</th>`).join('');
   const body = rows
-    .map((r) => `<tr>${columns.map((c) => `<td class="${c.num ? 'num' : ''}">${c.html ? c.get(r) : esc(c.get(r))}</td>`).join('')}</tr>`)
+    .map((r) => `<tr${rowAttrs ? ` ${rowAttrs(r)}` : ''}>${visible.map((c) => `<td${attrs(c)}>${c.html ? c.get(r) : esc(c.get(r))}</td>`).join('')}</tr>`)
     .join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-}
-
-export function emptyChart() {
-  return `<p class="empty">Sem dados no período selecionado.</p>`;
 }
 
 /** Mapa de calor linha × coluna (uma cor, claro→escuro). rows: [{ key, cells: [{ key, value, count }], total }]. */
@@ -139,11 +165,15 @@ export function heatmap({ rows, max, periodos }, { fmt }) {
         .map((c) => {
           const a = max ? c.value / max : 0;
           const alpha = c.value ? 0.12 + a * 0.78 : 0;
-          return `<td class="num heat" style="--a:${alpha.toFixed(2)}" ${tip(`${r.key} · ${c.key}`, [fmt(c.value), `${c.count} compras`])}>${c.value ? esc(fmt(c.value)) : '·'}</td>`;
+          return `<td class="num heat${alpha >= 0.72 ? ' heat-dark' : ''}" style="--a:${alpha.toFixed(2)}" tabindex="0" ${tip(`${r.key} · ${c.key}`, [fmt(c.value), `${c.count} compras`])}>${c.value ? esc(fmt(c.value)) : '·'}</td>`;
         })
         .join('');
       return `<tr><th scope="row">${esc(r.key)}</th>${cells}<td class="num"><b>${esc(fmt(r.total))}</b></td></tr>`;
     })
     .join('');
   return `<div class="table-wrap"><table class="heatmap"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+export function emptyChart() {
+  return `<p class="empty">Sem dados no período selecionado.</p>`;
 }

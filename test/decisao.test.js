@@ -33,7 +33,7 @@ test('média diária e comparativo de lojas', () => {
   assert.equal(calixt.cobrancasPendentes, 3);
   assert.equal(calixt.cobrancasPendentesCents, 57526);
   assert.ok(calixt.margemPct > 0 && calixt.margemPct < 1);
-  assert.equal(lojas[5].key, 'ZAINALOFTS7');
+  assert.equal(lojas[5].key, 'Zainalofts7');
   assert.ok(Math.abs(lojas.reduce((a, l) => a + l.share, 0) - 1) < 1e-9);
 });
 
@@ -108,7 +108,7 @@ test('recomendações priorizam crítico > alerta > info', () => {
   const cob = recs.find((r) => /cobranças pendentes/.test(r.titulo));
   assert.equal(cob.tone, 'critical'); // mais antiga há 12 dias
   assert.equal(cob.valorCents, 83786);
-  assert.ok(recs.some((r) => /ZAINALOFTS7 converte/.test(r.titulo)));
+  assert.ok(recs.some((r) => /Zainalofts7 converte/.test(r.titulo)));
   const ordem = recs.map((r) => ({ critical: 0, warning: 1, info: 2, good: 3 })[r.tone]);
   assert.deepEqual(ordem, [...ordem].sort());
   const calmo = recomendacoes({ vendas: { ...vendas, taxaConversao: 0.9, clientesNovos: 0 }, lojas: [], boletos: { vencidos: 0, venceEmBreve: 0 }, caixa: null, revisar: [], fiscal: { semNfce: 0 }, abandonosCategoria: [], diasComDados: 1 });
@@ -136,12 +136,13 @@ test('cobranças: KPIs, aging, lojas, semanas e clientes', () => {
   assert.equal(faixaAging(7), '4–7 dias');
   assert.equal(faixaAging(31), 'mais de 30 dias');
 
-  const lojas = cobrancasPorLoja(transacoes);
+  const lojas = cobrancasPorLoja({ saldo: transacoes, fluxo: transacoes, todas: transacoes, hoje: '2026-10-19' });
   assert.equal(lojas[0].key, 'Calixt Pinheiros');
   assert.equal(lojas[0].pendentes, 3);
   assert.equal(lojas[0].pendentesCents, 57526);
   assert.ok(lojas[0].pctFaturamento > 0.05 && lojas[0].pctFaturamento < 0.06);
-  assert.equal(lojas.find((l) => l.key === 'ID LISBOA').recuperacao, 1);
+  assert.equal(lojas.find((l) => l.key === 'ID Lisboa').pagasCents, 1799);
+  assert.equal(lojas[0].alerta, true);
 
   const semanas = cobrancasPorSemana(transacoes);
   assert.deepEqual(semanas.map((s) => s.key), ['2026-S40', '2026-S41', '2026-S42']);
@@ -161,5 +162,6 @@ test('cobranças: sem cobranças devolve taxas nulas', () => {
   assert.equal(k.pendentes, 0);
   assert.equal(k.taxaRecuperacaoValor, null);
   assert.equal(k.maisAntigaDias, null);
-  assert.equal(cobrancasPorLoja(transacoes.filter((t) => !t.cobranca)).length, 0);
+  const semCob = transacoes.filter((t) => !t.cobranca);
+  assert.equal(cobrancasPorLoja({ saldo: semCob, fluxo: semCob, todas: semCob, hoje: '2026-10-19' }).filter((l) => l.pendentes || l.pagas).length, 0);
 });

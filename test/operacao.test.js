@@ -29,7 +29,7 @@ test('inventário: detecta, normaliza e não duplica', () => {
 test('estoque: KPIs do último inventário', () => {
   const lojas = ultimoInventarioPorLoja(inventario.records);
   assert.equal(lojas.length, 1);
-  assert.equal(lojas[0].pdx, 'CONDOMINIO ID JAUAPERI');
+  assert.equal(lojas[0].pdx, 'Condominio ID Jauaperi');
   assert.equal(lojas[0].inventario, '758731');
   const k = estoqueKpis(lojas[0].itens);
   assert.equal(k.skus, 423);
@@ -56,7 +56,7 @@ test('filtro de inventário por loja usa o mapa código→id dos produtos', () =
   assert.equal(mapa.get('3732'), '17746');
   assert.equal(filterInventario(inventario.records, { pdxId: '17746' }, mapa).length, 423);
   assert.equal(filterInventario(inventario.records, { pdxId: '19132' }, mapa).length, 0);
-  assert.equal(filterInventario(inventario.records, { pdxId: 'x', pdxNome: 'CONDOMINIO ID JAUAPERI' }, new Map()).length, 423);
+  assert.equal(filterInventario(inventario.records, { pdxId: 'x', pdxNome: 'Condominio ID Jauaperi' }, new Map()).length, 423);
 });
 
 test('retornos: normaliza e agrega', () => {
@@ -72,7 +72,7 @@ test('retornos: normaliza e agrega', () => {
   assert.equal(k.custoCents, 30395);
   assert.equal(k.vencidosCents + k.avariasCents, k.custoCents);
   assert.equal(k.remessas, 12);
-  assert.equal(retornosPorLoja(retornos.records)[0].key, 'ID LISBOA');
+  assert.equal(retornosPorLoja(retornos.records)[0].key, 'ID Lisboa');
   assert.equal(retornosTopProdutos(retornos.records, 1)[0].key, 'Torta SADIA de Frango Com Requeijão 500g');
   assert.equal(retornosPorSemana(retornos.records).length, 3);
   assert.equal(filterRetornos(retornos.records, { pdxId: '19132' }).length, 7);

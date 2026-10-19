@@ -35,7 +35,7 @@ test('transações: lê o export Latin-1 e normaliza', () => {
   assert.equal(type, 'transacoes');
   assert.equal(records.length, 2325);
   const first = records.find((t) => t.id === '73502437');
-  assert.equal(first.pdx, 'CONDOMINIO ID JAUAPERI');
+  assert.equal(first.pdx, 'Condominio ID Jauaperi');
   assert.equal(first.compra, true);
   assert.equal(first.totalCents, 649);
   assert.equal(first.meioPagamento, 'Crédito');

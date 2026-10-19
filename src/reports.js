@@ -13,6 +13,7 @@ import {
   parseDistanceKm,
   daysBetween,
 } from './parse.js';
+import { storeName } from './format.js';
 
 export const REPORT_TYPES = /** @type {const} */ ({
   transacoes: { label: 'Transações', signature: ['Code Session', 'Forma pagamento'] },
@@ -121,7 +122,7 @@ export function normalizeTransacao(r) {
     franqueadoId: r['Id Franqueado'] || null,
     franqueado: r['Franqueado'] || null,
     pdxId: r['ID PDX'] || null,
-    pdx: r['PDX'] || '(sem loja)',
+    pdx: storeName(r['PDX']) || '(sem loja)',
     clienteId: r['Cliente ID'] || null,
     cliente: r['Nome Cliente'] || null,
     statusCliente: r['Status Cliente'] || null,
@@ -177,7 +178,7 @@ export function normalizeProduto(r) {
     sexo: r['Sexo'] || null,
     idade: parseInteger(r['Idade']) || null,
     pdxId: r['Id PDX'] || null,
-    pdx: r['PDX'] || '(sem loja)',
+    pdx: storeName(r['PDX']) || '(sem loja)',
     codigoPdx: r['Código PDX'] || null,
     via: (r['VIA'] || '').toUpperCase() || null,
     cobranca: parseYesNo(r['Cobrança']),
@@ -217,10 +218,25 @@ export const SITUACOES = {
   pago: { label: 'Pago', tone: 'good' },
 };
 
+const MESES_ABREV = { jan: '01', fev: '02', mar: '03', abr: '04', mai: '05', jun: '06', jul: '07', ago: '08', set: '09', out: '10', nov: '11', dez: '12' };
+
+/** "18, Out" + data de referência "2026-10-19" → "2026-10-18" (ano da referência; vira o ano anterior se ficar no futuro). */
+export function parsePicklistDate(value, reference) {
+  const m = /^(\d{1,2}),?\s*([a-zç]{3})/i.exec(String(value ?? '').trim());
+  if (!m || !reference) return null;
+  const mes = MESES_ABREV[m[2].toLowerCase().replace('ç', 'c')];
+  if (!mes) return null;
+  let ano = Number(reference.slice(0, 4));
+  let iso = `${ano}-${mes}-${m[1].padStart(2, '0')}`;
+  if (iso > reference) iso = `${ano - 1}-${mes}-${m[1].padStart(2, '0')}`;
+  return iso;
+}
+
 export function normalizeBoleto(r) {
   const id = String(r['Id'] ?? '').replace(/^#/, '');
   if (!id || !/^\d+$/.test(id)) return null; // ignora a linha "Total"
   const pago = parseDateTime(r['Pago']);
+  const geradoEm = parseDateTime(r['Data_2']);
   return {
     id,
     cidade: r['Cidade'] || null,
@@ -241,9 +257,9 @@ export function normalizeBoleto(r) {
     emissaoNota: dateOnly(parseDateTime(r['Data de emissão'])),
     picklist: r['Picklist'] && r['Picklist'] !== '--' ? r['Picklist'] : null,
     pago: dateOnly(pago),
-    dataPicklist: r['Data'] || null,
-    geradoEm: parseDateTime(r['Data_2']),
-    data: dateOnly(parseDateTime(r['Data_2'])),
+    dataPicklist: parsePicklistDate(r['Data'], dateOnly(geradoEm)) ?? (r['Data'] && r['Data'] !== '--' ? r['Data'] : null),
+    geradoEm,
+    data: dateOnly(geradoEm),
   };
 }
 
@@ -254,7 +270,7 @@ export function normalizeRetorno(r) {
   if (!dataHora) return null;
   return {
     pdxId: r['ID PDX'] || null,
-    pdx: r['PDX'] || '(sem loja)',
+    pdx: storeName(r['PDX']) || '(sem loja)',
     dataHora,
     data: dateOnly(dataHora),
     remessa: String(r['Remessa de retorno'] ?? '').replace(/^#/, '') || null,
@@ -280,7 +296,7 @@ export function normalizeInventario(r) {
   const ajustado = parseNumber(r['Posição ajustado']);
   return {
     codigoPdx: r['Código PDX'] || null,
-    pdx: r['PDX'] || '(sem loja)',
+    pdx: storeName(r['PDX']) || '(sem loja)',
     dataHora,
     data: dateOnly(dataHora),
     inventario: String(r['Inventário'] ?? '').replace(/^#/, '') || null,

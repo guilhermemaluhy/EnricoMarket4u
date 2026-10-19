@@ -31,13 +31,13 @@ anonimizadas de `data/sample/` (um dia de operação).
 
 | Aba | Conteúdo |
 | --- | --- |
-| Visão geral | cartões-resumo (com variação vs período anterior) e a lista "O que fazer" |
-| Financeiro | caixa dos próximos 14 dias, boletos (situação, vencimentos, lista) e reposição × vendas |
-| Cobranças | itens levados sem pagamento: pendente, recuperado, taxa de recuperação, envelhecimento, por loja e semana, lista com link de pagamento, clientes em cobrança com risco |
-| Vendas | por loja, hora, dia, meio de pagamento, canal, carrinhos abandonados e últimas transações |
-| Produtos | top 10, categorias, fabricantes, quem compra, quem paga a conta e margem a revisar |
+| Visão geral | cartões ordenados por urgência (com variação vs período anterior) e "Prioridades" agrupadas em Hoje / Esta semana / Para olhar |
+| Financeiro | caixa dos próximos 14 dias (resumo + gráfico), boletos (situação, lista, por dia) e reposição × vendas |
+| Cobranças | itens levados sem pagamento: em aberto, vencido > 7 dias, agir hoje, candidatos a cobrança, recuperado, peso no faturamento; prioridades de cobrança; fila por urgência com próxima ação, canal, link, mensagem pronta e "marcar feito"; régua de cobrança; fluxo semanal; por loja (com cobertura da perda de inventário); candidatos (carrinhos com valor sem compra em 60 min, compras removidas com valor); carteira de clientes com sinal BLOQUEAR / VIGIAR / LIBERAR e linha do tempo; recuperadas |
 | Operação | estoque (último inventário por loja): valor, perdas, acuracidade, rupturas, reposição prioritária; devoluções ao CD |
-| Lojas | comparativo de lojas e mapa de calor loja × período do dia |
+| Vendas | funil de sessões, hora, dia, meio de pagamento, canal e últimas transações |
+| Produtos | margem a revisar, top 10 (receita ou margem), categorias, fabricantes e quem compra |
+| Lojas | faturamento e carrinhos por loja, comparativo e mapa de calor loja × período do dia |
 | Clientes | fidelidade, carrinhos abandonados por categoria/canal e top 10 clientes |
 | Dados | importação, status de cada relatório e guia de exportação |
 
@@ -62,6 +62,10 @@ usa sempre o último inventário de cada loja (é uma foto), e os boletos não t
   estoque anterior a custo; rupturas = posição ajustada zero. A reposição prioritária cruza itens zerados/com 1 unidade
   com o que vendeu no período. O inventário identifica a loja pelo "Código PDX", mapeado para o id da loja via relatório
   de produtos. Recomendações de operação: perda ≥ 3% do estoque (crítico a partir de 5%), rupturas e devoluções ao CD.
+- **Layout**: gráficos SVG na largura real do cartão (texto a 11px também no celular, rótulo acima da barra abaixo de
+  420px), tabelas com colunas opcionais escondidas no celular (`mobile: false`) e primeira coluna fixa, paleta
+  categórica validada para daltonismo (azul, laranja, verde-água, violeta, magenta, amarelo, verde, vermelho; a cor segue
+  a loja) e vermelho/amarelo/verde só com significado.
 - **Vs período anterior**: com filtro de 7 dias, 30 dias ou personalizado, os cartões da visão geral mostram a
   variação contra a janela anterior de mesmo tamanho.
 
@@ -82,8 +86,16 @@ usa sempre o último inventário de cada loja (é uma foto), e os boletos não t
   item levado sem pagar com link de pagamento gerado; `Pagamento efetuada (cobrança)` é cobrança recuperada.
 - **Faturamento** soma só `Compra efetuada`. Cobranças pagas aparecem à parte como "recuperado". A **conversão de
   sessões** é compras ÷ (compras + carrinhos abandonados + compras removidas).
-- **Cobranças**: a taxa de recuperação compara pagas com pendentes + pagas do período. Uma cobrança paga aparece na data
-  do pagamento, não na da cobrança original. Risco alto = cliente reincidente ou pendência de cliente bloqueado/desativado.
+- **Cobranças**: pendentes são saldo (todo o histórico importado, só o filtro de loja se aplica); geradas e pagas são
+  fluxo (período). A régua de cobrança tem cinco etapas por dias em aberto (D0–2 link e mensagem, D3–6 ligar e oferecer
+  Pix, D7–13 bloquear, D14–29 síndico, ≥ D30 perda provável); boleto gerado congela a régua por 3 dias úteis. A fila
+  ordena por pontuação de urgência (idade, valor, cobrança ÷ histórico, sessões sem compra, compras removidas antes,
+  link sem interação, voltou à loja depois). Só o status Bloqueado é sinal de gestão; Desativado não é inadimplência.
+  Operadores do inventário e clientes sem ID ficam fora das listas. Uma cobrança paga aparece na data do pagamento, não
+  na da cobrança original; "dias para pagar" só existe quando a cobrança apareceu pendente numa importação anterior
+  (guardado no navegador por ID do link).
+- **Candidatos a cobrança**: carrinhos com valor sem compra do mesmo cliente na mesma loja em até 60 minutos, e compras
+  removidas com valor. Lista para conferir câmera, não para contabilizar.
 - **Margem** = valor de venda − valor de custo do relatório de produtos.
 - **Situação do boleto** é calculada pela data de hoje: pago → vencido → vence em até 3 dias → a vencer. O campo `Status` do export só muda quando o painel atualiza.
 - **Boletos não têm loja**: o filtro de loja não se aplica a eles.
