@@ -90,14 +90,23 @@ export const EVENTOS = {
 };
 
 export function classifyEvento(evento) {
-  const e = String(evento ?? '').toLowerCase();
+  const e = String(evento ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  // Qualquer Tipo que mencione cobrança é uma cobrança: "Cobrança pendente", "Compra efetuada (cobrança)",
+  // "Pagamento efetuada (cobrança)". Removida/estornada com "(cobrança)" segue como removida/estornada.
+  if (e.includes('cobranca')) {
+    if (/removid/.test(e)) return 'removida';
+    if (/estorn/.test(e)) return 'estornada';
+    if (/pend|aguard|abert|gerad|enviad|nao pag/.test(e)) return 'cobranca_pendente';
+    return 'cobranca_paga';
+  }
   if (e.startsWith('compra efetuada')) return 'compra';
   if (e.startsWith('no carrinho')) return 'carrinho';
   if (e.startsWith('compra removida')) return 'removida';
   if (e.startsWith('compra estornada')) return 'estornada';
-  if (e.startsWith('cobrança pendente') || e.startsWith('cobranca pendente')) return 'cobranca_pendente';
   if (e.startsWith('pagamento efetuad')) return 'cobranca_paga';
-  if (e.includes('cobran')) return e.includes('pend') ? 'cobranca_pendente' : 'cobranca_paga';
   return 'outro';
 }
 

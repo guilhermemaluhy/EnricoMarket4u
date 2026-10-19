@@ -77,6 +77,11 @@ test('classifyEvento cobre variações', () => {
   assert.equal(classifyEvento('Cobrança pendente'), 'cobranca_pendente');
   assert.equal(classifyEvento('Pagamento efetuada (cobrança)'), 'cobranca_paga');
   assert.equal(classifyEvento('Cobrança paga'), 'cobranca_paga');
+  assert.equal(classifyEvento('Compra efetuada (cobrança)'), 'cobranca_paga'); // forma que aparece no painel
+  assert.equal(classifyEvento('Compra efetuada (Cobrança)'), 'cobranca_paga');
+  assert.equal(classifyEvento('Compra efetuada (cobranca)'), 'cobranca_paga');
+  assert.equal(classifyEvento('Cobrança Pendente'), 'cobranca_pendente');
+  assert.equal(classifyEvento('Compra removida (cobrança)'), 'removida');
   assert.equal(classifyEvento('???'), 'outro');
 });
 
